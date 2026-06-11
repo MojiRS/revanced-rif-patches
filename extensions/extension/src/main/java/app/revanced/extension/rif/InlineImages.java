@@ -3,59 +3,72 @@ package app.revanced.extension.rif;
 import android.content.res.Resources;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.ImageDecoder;
 import android.graphics.Paint;
 import android.graphics.Rect;
+import android.graphics.drawable.Animatable;
 import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
+import android.os.Build;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.text.SpannableStringBuilder;
 import android.text.Spanned;
 import android.text.style.ImageSpan;
 import android.text.style.URLSpan;
 import android.util.LruCache;
+import android.util.Size;
+import android.widget.TextView;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
+import java.util.WeakHashMap;
 
 /**
- * Inline comment images.
+ * Inline comment images (static + animated GIFs).
  *
- * Injected at the start of rif's CommentThing.e(SpannableStringBuilder), which
- * receives the fully-rendered comment body (with link spans already applied) on
- * a background thread, before the body is cached/displayed. For each link span
- * that points at a direct image, we synchronously fetch + scale the bitmap and
- * overlay an ImageSpan over the link text — so the image is embedded before the
- * row is ever measured (no async invalidation or RecyclerView resize needed).
- *
- * v1 scope: direct image links only (path ends in a known image extension, or a
- * known direct-image host like i.redd.it). The original link span is kept, so
- * tapping the image still opens it full-screen.
+ * Two injection points:
+ *  - {@link #embed(SpannableStringBuilder)} is called from rif's
+ *    CommentThing.e(...) on a background thread, before the comment body is
+ *    cached/shown. It fetches each direct-image link, scales it, and overlays an
+ *    ImageSpan. Animated GIFs (API 28+) decode to an AnimatedImageDrawable but
+ *    are not started yet (no host view exists here).
+ *  - {@link #attach(TextView)} is called from rif's comment ViewHolder bind
+ *    (n2.o.h, right after setText) on the main thread. It wires each animated
+ *    drawable's callback to the TextView and starts it, so frames invalidate
+ *    only that TextView. Re-binds stop the previously-started animatables.
  */
 public final class InlineImages {
 
     private InlineImages() {}
 
-    // ~16 MB bitmap cache keyed by URL, shared across all comments.
-    private static final LruCache<String, Bitmap> CACHE = new LruCache<String, Bitmap>(16 * 1024 * 1024) {
+    // Downloaded bytes cache (~24 MB), keyed by URL.
+    private static final LruCache<String, byte[]> BYTES = new LruCache<String, byte[]>(24 * 1024 * 1024) {
         @Override
-        protected int sizeOf(String key, Bitmap value) {
-            return value.getByteCount();
+        protected int sizeOf(String key, byte[] value) {
+            return value.length;
         }
     };
 
-    private static final int MAX_DOWNLOAD_BYTES = 12 * 1024 * 1024;
+    // Animatables currently started per TextView, so a recycled row can stop them.
+    private static final WeakHashMap<TextView, List<Animatable>> RUNNING = new WeakHashMap<>();
+
+    private static final int MAX_DOWNLOAD_BYTES = 16 * 1024 * 1024;
     private static final int CONNECT_TIMEOUT_MS = 10_000;
     private static final int READ_TIMEOUT_MS = 15_000;
 
-    /** Entry point invoked from the patched CommentThing.e(). */
+    // ---- background: embed images into the comment spannable -------------------
+
     public static void embed(SpannableStringBuilder body) {
         try {
             if (body == null) return;
-            // Never block the UI thread; this should always run on i0's worker.
-            if (Looper.myLooper() == Looper.getMainLooper()) return;
+            if (Looper.myLooper() == Looper.getMainLooper()) return; // never block UI
 
             URLSpan[] links = body.getSpans(0, body.length(), URLSpan.class);
             if (links == null || links.length == 0) return;
@@ -69,35 +82,176 @@ public final class InlineImages {
                     int end = body.getSpanEnd(link);
                     if (start < 0 || end < 0 || start >= end) continue;
 
-                    Bitmap bmp = load(url);
-                    if (bmp == null) continue;
+                    byte[] data = fetch(url);
+                    if (data == null) continue;
 
-                    BitmapDrawable d = new BitmapDrawable(Resources.getSystem(), bmp);
-                    d.setBounds(0, 0, bmp.getWidth(), bmp.getHeight());
-                    // Overlay the image over the link text. The link span stays
-                    // underneath so tapping still opens the image full-screen.
-                    // If the image is the first thing in the comment (only
-                    // whitespace before it), add a little space above it so it
-                    // doesn't crowd the header; images after text already get the
-                    // normal paragraph gap from the preceding line break.
+                    Drawable drawable = toDrawable(data);
+                    if (drawable == null) continue;
+
                     boolean leading = isBlank(body, 0, start);
                     ImageSpan span = leading
-                            ? new LeadingSpacedImageSpan(d)
-                            : new ImageSpan(d, ImageSpan.ALIGN_BASELINE);
+                            ? new LeadingSpacedImageSpan(drawable)
+                            : new ImageSpan(drawable, ImageSpan.ALIGN_BASELINE);
                     body.setSpan(span, start, end, Spanned.SPAN_INCLUSIVE_EXCLUSIVE);
                 } catch (Throwable ignored) {
-                    // Leave this link as a plain link on any failure.
+                    // leave this link as a plain link
                 }
             }
         } catch (Throwable ignored) {
-            // Never break comment rendering.
         }
+    }
+
+    // ---- main thread: start/stop GIF animation for a bound TextView ------------
+
+    public static void attach(TextView tv) {
+        try {
+            if (tv == null) return;
+
+            // Stop animatables started for the previous comment on this recycled view.
+            List<Animatable> prev = RUNNING.remove(tv);
+            if (prev != null) {
+                for (Animatable a : prev) {
+                    try {
+                        a.stop();
+                        if (a instanceof Drawable) ((Drawable) a).setCallback(null);
+                    } catch (Throwable ignored) {
+                    }
+                }
+            }
+
+            CharSequence cs = tv.getText();
+            if (!(cs instanceof Spanned)) return;
+            Spanned sp = (Spanned) cs;
+            ImageSpan[] spans = sp.getSpans(0, sp.length(), ImageSpan.class);
+            if (spans.length == 0) return;
+
+            Drawable.Callback cb = null;
+            List<Animatable> started = new ArrayList<>();
+            for (ImageSpan span : spans) {
+                Drawable d = span.getDrawable();
+                if (d instanceof Animatable) {
+                    if (cb == null) cb = callbackFor(tv);
+                    d.setCallback(cb);
+                    Animatable anim = (Animatable) d;
+                    if (!anim.isRunning()) anim.start();
+                    started.add(anim);
+                }
+            }
+            if (!started.isEmpty()) RUNNING.put(tv, started);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static Drawable.Callback callbackFor(final TextView tv) {
+        return new Drawable.Callback() {
+            @Override
+            public void invalidateDrawable(Drawable who) {
+                tv.invalidate();
+            }
+
+            @Override
+            public void scheduleDrawable(Drawable who, Runnable what, long when) {
+                tv.postDelayed(what, Math.max(0, when - SystemClock.uptimeMillis()));
+            }
+
+            @Override
+            public void unscheduleDrawable(Drawable who, Runnable what) {
+                tv.removeCallbacks(what);
+            }
+        };
+    }
+
+    // ---- decoding --------------------------------------------------------------
+
+    private static Drawable toDrawable(byte[] data) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && isGif(data)) {
+            Drawable animated = decodeAnimated(data);
+            if (animated != null) return animated;
+        }
+        Bitmap bmp = decodeScaled(data);
+        if (bmp == null) return null;
+        BitmapDrawable bd = new BitmapDrawable(Resources.getSystem(), bmp);
+        bd.setBounds(0, 0, bmp.getWidth(), bmp.getHeight());
+        return bd;
+    }
+
+    private static Drawable decodeAnimated(byte[] data) {
+        try {
+            final int targetW = targetWidth();
+            final int maxH = maxHeight();
+            ImageDecoder.Source src = ImageDecoder.createSource(ByteBuffer.wrap(data));
+            Drawable d = ImageDecoder.decodeDrawable(src, new ImageDecoder.OnHeaderDecodedListener() {
+                @Override
+                public void onHeaderDecoded(ImageDecoder decoder, ImageDecoder.ImageInfo info,
+                                            ImageDecoder.Source source) {
+                    Size size = info.getSize();
+                    int w = size.getWidth();
+                    int h = size.getHeight();
+                    if (w > 0 && h > 0 && w > targetW) {
+                        int th = Math.round(h * ((float) targetW / (float) w));
+                        decoder.setTargetSize(targetW, Math.min(th, maxH));
+                    }
+                }
+            });
+            d.setBounds(0, 0, d.getIntrinsicWidth(), d.getIntrinsicHeight());
+            return d;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private static Bitmap decodeScaled(byte[] data) {
+        int targetW = targetWidth();
+        int maxH = maxHeight();
+
+        BitmapFactory.Options bounds = new BitmapFactory.Options();
+        bounds.inJustDecodeBounds = true;
+        BitmapFactory.decodeByteArray(data, 0, data.length, bounds);
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null;
+
+        BitmapFactory.Options opts = new BitmapFactory.Options();
+        opts.inSampleSize = sampleSize(bounds.outWidth, targetW);
+        Bitmap decoded = BitmapFactory.decodeByteArray(data, 0, data.length, opts);
+        if (decoded == null) return null;
+
+        int w = decoded.getWidth();
+        int h = decoded.getHeight();
+        if (w <= 0 || h <= 0) return decoded;
+
+        float scale = (float) targetW / (float) w;
+        int outW = targetW;
+        int outH = Math.round(h * scale);
+        if (outH > maxH) {
+            outH = maxH;
+            outW = Math.round(w * ((float) maxH / (float) h));
+        }
+        if (outW <= 0 || outH <= 0) return decoded;
+
+        Bitmap scaled = Bitmap.createScaledBitmap(decoded, outW, outH, true);
+        if (scaled != decoded) decoded.recycle();
+        return scaled;
+    }
+
+    // ---- helpers ---------------------------------------------------------------
+
+    private static int targetWidth() {
+        Resources res = Resources.getSystem();
+        return Math.max(1, res.getDisplayMetrics().widthPixels - dp(res, 24));
+    }
+
+    private static int maxHeight() {
+        return Resources.getSystem().getDisplayMetrics().widthPixels * 2;
+    }
+
+    private static boolean isGif(byte[] data) {
+        // "GIF8" magic.
+        return data != null && data.length >= 4
+                && data[0] == 'G' && data[1] == 'I' && data[2] == 'F' && data[3] == '8';
     }
 
     private static boolean isDirectImage(String url) {
         if (url == null) return false;
         String u = url.toLowerCase(Locale.US);
-        // Strip query/fragment before checking the extension.
         int cut = u.indexOf('?');
         if (cut >= 0) u = u.substring(0, cut);
         cut = u.indexOf('#');
@@ -107,20 +261,15 @@ public final class InlineImages {
                 || u.endsWith(".webp") || u.endsWith(".gif") || u.endsWith(".bmp")) {
             return true;
         }
-        // i.redd.it / preview.redd.it serve direct images even without an extension.
         return u.startsWith("https://i.redd.it/") || u.startsWith("https://preview.redd.it/");
     }
 
-    private static Bitmap load(String url) {
-        Bitmap cached = CACHE.get(url);
+    private static byte[] fetch(String url) {
+        byte[] cached = BYTES.get(url);
         if (cached != null) return cached;
-
         byte[] data = download(url);
-        if (data == null) return null;
-
-        Bitmap bmp = decodeScaled(data);
-        if (bmp != null) CACHE.put(url, bmp);
-        return bmp;
+        if (data != null) BYTES.put(url, data);
+        return data;
     }
 
     private static byte[] download(String url) {
@@ -132,8 +281,7 @@ public final class InlineImages {
             conn.setInstanceFollowRedirects(true);
             conn.setRequestProperty("User-Agent", "rif-inline-images");
             conn.setRequestProperty("Accept", "image/*");
-            int code = conn.getResponseCode();
-            if (code != HttpURLConnection.HTTP_OK) return null;
+            if (conn.getResponseCode() != HttpURLConnection.HTTP_OK) return null;
 
             InputStream in = conn.getInputStream();
             ByteArrayOutputStream out = new ByteArrayOutputStream(32 * 1024);
@@ -152,45 +300,6 @@ public final class InlineImages {
         } finally {
             if (conn != null) conn.disconnect();
         }
-    }
-
-    private static Bitmap decodeScaled(byte[] data) {
-        // Target width = screen width minus a small margin; cap height so a tall
-        // image can't produce an absurd row.
-        Resources res = Resources.getSystem();
-        int screenW = res.getDisplayMetrics().widthPixels;
-        int targetW = Math.max(1, screenW - dp(res, 24));
-        int maxH = screenW * 2;
-
-        // First pass: bounds only.
-        BitmapFactory.Options bounds = new BitmapFactory.Options();
-        bounds.inJustDecodeBounds = true;
-        BitmapFactory.decodeByteArray(data, 0, data.length, bounds);
-        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null;
-
-        // Second pass: subsample down toward the target width.
-        BitmapFactory.Options opts = new BitmapFactory.Options();
-        opts.inSampleSize = sampleSize(bounds.outWidth, targetW);
-        Bitmap decoded = BitmapFactory.decodeByteArray(data, 0, data.length, opts);
-        if (decoded == null) return null;
-
-        // Scale to exactly targetW (preserve aspect), then clamp height.
-        int w = decoded.getWidth();
-        int h = decoded.getHeight();
-        if (w <= 0 || h <= 0) return decoded;
-
-        float scale = (float) targetW / (float) w;
-        int outW = targetW;
-        int outH = Math.round(h * scale);
-        if (outH > maxH) {
-            outH = maxH;
-            outW = Math.round(w * ((float) maxH / (float) h));
-        }
-        if (outW <= 0 || outH <= 0) return decoded;
-
-        Bitmap scaled = Bitmap.createScaledBitmap(decoded, outW, outH, true);
-        if (scaled != decoded) decoded.recycle();
-        return scaled;
     }
 
     private static int sampleSize(int srcW, int targetW) {

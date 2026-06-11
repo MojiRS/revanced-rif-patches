@@ -1,8 +1,15 @@
 package app.revanced.patches.rif.comments
 
 import app.revanced.patcher.extensions.InstructionExtensions.addInstructions
+import app.revanced.patcher.extensions.InstructionExtensions.instructions
 import app.revanced.patcher.fingerprint
 import app.revanced.patcher.patch.bytecodePatch
+import app.revanced.patcher.patch.PatchException
+import com.android.tools.smali.dexlib2.Opcode
+import com.android.tools.smali.dexlib2.iface.instruction.FiveRegisterInstruction
+import com.android.tools.smali.dexlib2.iface.instruction.ReferenceInstruction
+
+private const val EXTENSION = "Lapp/revanced/extension/rif/InlineImages;"
 
 // CommentThing.e(SpannableStringBuilder) is rif's i0 render callback: it receives
 // the fully-rendered comment body (link spans already applied) on a background
@@ -18,10 +25,24 @@ internal val commentRenderedBodyFingerprint = fingerprint {
     }
 }
 
+// n2.o.h(m, CommentThing, Fragment) is the comment ViewHolder body bind. Right
+// after `bodyTextView.setText(body)` we attach() so any animated (GIF) drawable
+// in the spannable gets its callback wired to that TextView and is started; this
+// is the main thread, so animation can run. h() has exactly one setText.
+internal val commentBodyBindFingerprint = fingerprint {
+    custom { method, classDef ->
+        classDef.type == "Ln2/o;" &&
+            method.name == "h" &&
+            method.parameterTypes.size == 3 &&
+            method.parameterTypes[1].toString() ==
+                "Lcom/andrewshu/android/reddit/things/objects/CommentThing;"
+    }
+}
+
 @Suppress("unused")
 val inlineCommentImagesPatch = bytecodePatch(
     name = "Inline comment images",
-    description = "Renders direct image links in comments as embedded inline images.",
+    description = "Renders direct image links in comments as embedded inline images (static + animated GIFs).",
 ) {
     compatibleWith("com.andrewshu.android.reddit")
 
@@ -29,12 +50,28 @@ val inlineCommentImagesPatch = bytecodePatch(
     extendWith("extensions/extension.rve")
 
     execute {
-        // p1 = the SpannableStringBuilder argument. Embed images in place before
-        // it is cached; the call runs on rif's comment-render worker thread.
+        // 1) Embed images into the comment spannable (background, before display).
+        // p1 = the SpannableStringBuilder argument.
         commentRenderedBodyFingerprint.method.addInstructions(
             0,
-            "invoke-static { p1 }, " +
-                "Lapp/revanced/extension/rif/InlineImages;->embed(Landroid/text/SpannableStringBuilder;)V",
+            "invoke-static { p1 }, $EXTENSION->embed(Landroid/text/SpannableStringBuilder;)V",
+        )
+
+        // 2) Start GIF animation once the body TextView is bound (main thread).
+        val bind = commentBodyBindFingerprint.method
+        val setTextIndex = bind.instructions.indexOfFirst { insn ->
+            insn.opcode == Opcode.INVOKE_VIRTUAL &&
+                (insn as? ReferenceInstruction)?.reference?.toString() ==
+                "Landroid/widget/TextView;->setText(Ljava/lang/CharSequence;)V"
+        }
+        if (setTextIndex == -1) {
+            throw PatchException("comment body setText not found in n2.o.h")
+        }
+        val textViewRegister =
+            (bind.instructions.elementAt(setTextIndex) as FiveRegisterInstruction).registerC
+        bind.addInstructions(
+            setTextIndex + 1,
+            "invoke-static { v$textViewRegister }, $EXTENSION->attach(Landroid/widget/TextView;)V",
         )
     }
 }
