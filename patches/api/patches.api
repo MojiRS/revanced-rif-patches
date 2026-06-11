@@ -1,0 +1,4 @@
+public final class app/revanced/patches/rif/ads/DisableAdsPatchKt {
+	public static final fun getDisableAdsPatch ()Lapp/revanced/patcher/patch/BytecodePatch;
+}
+
