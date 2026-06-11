@@ -3,7 +3,10 @@ package app.revanced.extension.rif;
 import android.content.res.Resources;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Paint;
+import android.graphics.Rect;
 import android.graphics.drawable.BitmapDrawable;
+import android.graphics.drawable.Drawable;
 import android.os.Looper;
 import android.text.SpannableStringBuilder;
 import android.text.Spanned;
@@ -73,8 +76,15 @@ public final class InlineImages {
                     d.setBounds(0, 0, bmp.getWidth(), bmp.getHeight());
                     // Overlay the image over the link text. The link span stays
                     // underneath so tapping still opens the image full-screen.
-                    body.setSpan(new ImageSpan(d, ImageSpan.ALIGN_BASELINE),
-                            start, end, Spanned.SPAN_INCLUSIVE_EXCLUSIVE);
+                    // If the image is the first thing in the comment (only
+                    // whitespace before it), add a little space above it so it
+                    // doesn't crowd the header; images after text already get the
+                    // normal paragraph gap from the preceding line break.
+                    boolean leading = isBlank(body, 0, start);
+                    ImageSpan span = leading
+                            ? new LeadingSpacedImageSpan(d)
+                            : new ImageSpan(d, ImageSpan.ALIGN_BASELINE);
+                    body.setSpan(span, start, end, Spanned.SPAN_INCLUSIVE_EXCLUSIVE);
                 } catch (Throwable ignored) {
                     // Leave this link as a plain link on any failure.
                 }
@@ -195,5 +205,39 @@ public final class InlineImages {
 
     private static int dp(Resources res, int value) {
         return Math.round(value * res.getDisplayMetrics().density);
+    }
+
+    private static boolean isBlank(CharSequence cs, int start, int end) {
+        for (int i = start; i < end; i++) {
+            if (!Character.isWhitespace(cs.charAt(i))) return false;
+        }
+        return true;
+    }
+
+    /**
+     * ImageSpan that reserves ~1/3 of a text line of extra space above the image
+     * via the line ascent. Used only for a leading image so it sits a little
+     * below the comment header instead of crowding it; the image itself stays
+     * bottom-aligned (inherited draw), so the padding lands above it.
+     */
+    private static final class LeadingSpacedImageSpan extends ImageSpan {
+        LeadingSpacedImageSpan(Drawable d) {
+            super(d, ImageSpan.ALIGN_BASELINE);
+        }
+
+        @Override
+        public int getSize(Paint paint, CharSequence text, int start, int end,
+                           Paint.FontMetricsInt fm) {
+            Rect bounds = getDrawable().getBounds();
+            if (fm != null) {
+                Paint.FontMetricsInt pfm = paint.getFontMetricsInt();
+                int pad = Math.round((pfm.descent - pfm.ascent) / 3f);
+                fm.ascent = -bounds.bottom - pad;
+                fm.top = fm.ascent;
+                fm.descent = 0;
+                fm.bottom = 0;
+            }
+            return bounds.right;
+        }
     }
 }
