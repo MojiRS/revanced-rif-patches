@@ -9,6 +9,7 @@ import app.revanced.patcher.patch.resourcePatch
 import app.revanced.patches.rif.settings.RIF_PACKAGE
 import app.revanced.patches.rif.settings.addRevancedPreferenceCategory
 import app.revanced.patches.rif.settings.checkBoxPreference
+import app.revanced.patches.rif.settings.revancedSettingsPatch
 import app.revanced.patches.rif.settings.revancedSettingsResourcePatch
 import com.android.tools.smali.dexlib2.Opcode
 import com.android.tools.smali.dexlib2.iface.instruction.FiveRegisterInstruction
@@ -72,7 +73,7 @@ val inlineCommentImagesPatch = bytecodePatch(
     description = "Renders direct image links in comments as embedded inline images (static + animated GIFs).",
 ) {
     compatibleWith(RIF_PACKAGE)
-    dependsOn(inlineImagesSettingsResourcePatch)
+    dependsOn(inlineImagesSettingsResourcePatch, revancedSettingsPatch)
 
     // Bring our extension (InlineImages) into the app.
     extendWith("extensions/extension.rve")

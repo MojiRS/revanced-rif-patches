@@ -1,6 +1,9 @@
 package app.revanced.patches.rif.settings
 
+import app.revanced.patcher.extensions.InstructionExtensions.addInstructions
+import app.revanced.patcher.fingerprint
 import app.revanced.patcher.patch.ResourcePatchContext
+import app.revanced.patcher.patch.bytecodePatch
 import app.revanced.patcher.patch.resourcePatch
 import org.w3c.dom.Document
 import org.w3c.dom.Element
@@ -37,6 +40,36 @@ val revancedSettingsResourcePatch = resourcePatch(
             entry.setAttribute("app:title", "ReVanced")
             screen.insertBefore(entry, screen.firstChild)
         }
+    }
+}
+
+// rif's Application; we hook onCreate to hand the app Context to our extension so
+// preference reads never rely on hidden-API ActivityThread reflection.
+private val rifApplicationOnCreateFingerprint = fingerprint {
+    custom { method, classDef ->
+        classDef.type == "Lcom/andrewshu/android/reddit/RedditIsFunApplication;" &&
+            method.name == "onCreate" &&
+            method.parameterTypes.isEmpty()
+    }
+}
+
+/**
+ * Bytecode side of the settings framework: brings the extension into the app and
+ * initializes its Context from Application.onCreate. Feature patches depend on this
+ * so their settings reads work.
+ */
+val revancedSettingsPatch = bytecodePatch(
+    description = "Initializes the ReVanced settings framework.",
+) {
+    compatibleWith(RIF_PACKAGE)
+    dependsOn(revancedSettingsResourcePatch)
+    extendWith("extensions/extension.rve")
+
+    execute {
+        rifApplicationOnCreateFingerprint.method.addInstructions(
+            0,
+            "invoke-static { p0 }, Lapp/revanced/extension/rif/Settings;->init(Landroid/content/Context;)V",
+        )
     }
 }
 

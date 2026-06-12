@@ -9,6 +9,7 @@ import app.revanced.patcher.patch.resourcePatch
 import app.revanced.patches.rif.settings.RIF_PACKAGE
 import app.revanced.patches.rif.settings.addRevancedPreferenceCategory
 import app.revanced.patches.rif.settings.checkBoxPreference
+import app.revanced.patches.rif.settings.revancedSettingsPatch
 import app.revanced.patches.rif.settings.revancedSettingsResourcePatch
 
 private const val ADS_PACKAGE = "Lcom/andrewshu/android/reddit/ads/"
@@ -67,7 +68,7 @@ val disableAdsPatch = bytecodePatch(
     description = "Removes AppLovin native feed ads, banner ads, and image-viewer ads from rif is fun.",
 ) {
     compatibleWith(RIF_PACKAGE)
-    dependsOn(disableAdsSettingsResourcePatch)
+    dependsOn(disableAdsSettingsResourcePatch, revancedSettingsPatch)
     extendWith("extensions/extension.rve")
 
     execute {

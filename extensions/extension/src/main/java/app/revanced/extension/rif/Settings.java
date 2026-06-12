@@ -17,19 +17,38 @@ public final class Settings {
     public static final String KEY_INLINE_IMAGES = "INLINE_IMAGES";
     public static final String KEY_INLINE_IMAGES_SCALE = "INLINE_IMAGES_SCALE";
 
-    private static final String PREFS_NAME = "com.andrewshu.android.reddit_preferences";
-
     private static SharedPreferences prefs;
+    private static Context appContext;
 
     private Settings() {}
+
+    /**
+     * Captures the application Context. Called from a hook injected into rif's
+     * Application.onCreate, so we never depend on (hidden-API-restricted)
+     * ActivityThread reflection to read preferences.
+     */
+    public static void init(Context context) {
+        try {
+            if (context != null && appContext == null) {
+                appContext = context.getApplicationContext();
+                prefs = null; // re-resolve against the real context
+            }
+        } catch (Throwable ignored) {
+        }
+    }
 
     private static SharedPreferences prefs() {
         if (prefs == null) {
             try {
-                Context ctx = (Context) Class.forName("android.app.ActivityThread")
-                        .getMethod("currentApplication").invoke(null);
+                Context ctx = appContext;
+                if (ctx == null) {
+                    // Fallback if init() hasn't run yet.
+                    ctx = (Context) Class.forName("android.app.ActivityThread")
+                            .getMethod("currentApplication").invoke(null);
+                }
                 if (ctx != null) {
-                    prefs = ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+                    String name = ctx.getPackageName() + "_preferences";
+                    prefs = ctx.getSharedPreferences(name, Context.MODE_PRIVATE);
                 }
             } catch (Throwable ignored) {
             }
