@@ -15,3 +15,8 @@ android {
         abortOnError = false
     }
 }
+
+dependencies {
+    // Compile-only stub of rif's RifBaseSettingsFragment; provided by rif at runtime.
+    compileOnly(files("libs/rif-stubs.jar"))
+}

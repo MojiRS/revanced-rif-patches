@@ -5,11 +5,38 @@ import app.revanced.patcher.extensions.InstructionExtensions.instructions
 import app.revanced.patcher.fingerprint
 import app.revanced.patcher.patch.bytecodePatch
 import app.revanced.patcher.patch.PatchException
+import app.revanced.patcher.patch.resourcePatch
+import app.revanced.patches.rif.settings.RIF_PACKAGE
+import app.revanced.patches.rif.settings.addRevancedPreferenceCategory
+import app.revanced.patches.rif.settings.checkBoxPreference
+import app.revanced.patches.rif.settings.revancedSettingsResourcePatch
 import com.android.tools.smali.dexlib2.Opcode
 import com.android.tools.smali.dexlib2.iface.instruction.FiveRegisterInstruction
 import com.android.tools.smali.dexlib2.iface.instruction.ReferenceInstruction
 
 private const val EXTENSION = "Lapp/revanced/extension/rif/InlineImages;"
+
+// Adds the "Inline comment images" category (two checkboxes) to the ReVanced screen.
+// "Scale inline images to fit" is greyed out when "Inline images" is off.
+val inlineImagesSettingsResourcePatch = resourcePatch(
+    description = "Adds the Inline comment images settings.",
+) {
+    compatibleWith(RIF_PACKAGE)
+    dependsOn(revancedSettingsResourcePatch)
+
+    execute {
+        addRevancedPreferenceCategory("Inline comment images") { doc, category ->
+            category.appendChild(doc.checkBoxPreference("INLINE_IMAGES", "Inline images"))
+            category.appendChild(
+                doc.checkBoxPreference(
+                    "INLINE_IMAGES_SCALE",
+                    "Scale inline images to fit",
+                    dependency = "INLINE_IMAGES",
+                ),
+            )
+        }
+    }
+}
 
 // CommentThing.e(SpannableStringBuilder) is rif's i0 render callback: it receives
 // the fully-rendered comment body (link spans already applied) on a background
@@ -44,7 +71,8 @@ val inlineCommentImagesPatch = bytecodePatch(
     name = "Inline comment images",
     description = "Renders direct image links in comments as embedded inline images (static + animated GIFs).",
 ) {
-    compatibleWith("com.andrewshu.android.reddit")
+    compatibleWith(RIF_PACKAGE)
+    dependsOn(inlineImagesSettingsResourcePatch)
 
     // Bring our extension (InlineImages) into the app.
     extendWith("extensions/extension.rve")

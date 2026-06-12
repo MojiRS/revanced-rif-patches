@@ -68,6 +68,7 @@ public final class InlineImages {
     public static void embed(SpannableStringBuilder body) {
         try {
             if (body == null) return;
+            if (!Settings.inlineImages()) return; // feature disabled in settings
             if (Looper.myLooper() == Looper.getMainLooper()) return; // never block UI
 
             URLSpan[] links = body.getSpans(0, body.length(), URLSpan.class);
@@ -177,20 +178,14 @@ public final class InlineImages {
 
     private static Drawable decodeAnimated(byte[] data) {
         try {
-            final int targetW = targetWidth();
-            final int maxH = maxHeight();
             ImageDecoder.Source src = ImageDecoder.createSource(ByteBuffer.wrap(data));
             Drawable d = ImageDecoder.decodeDrawable(src, new ImageDecoder.OnHeaderDecodedListener() {
                 @Override
                 public void onHeaderDecoded(ImageDecoder decoder, ImageDecoder.ImageInfo info,
                                             ImageDecoder.Source source) {
                     Size size = info.getSize();
-                    int w = size.getWidth();
-                    int h = size.getHeight();
-                    if (w > 0 && h > 0 && w > targetW) {
-                        int th = Math.round(h * ((float) targetW / (float) w));
-                        decoder.setTargetSize(targetW, Math.min(th, maxH));
-                    }
+                    int[] out = outSize(size.getWidth(), size.getHeight());
+                    decoder.setTargetSize(out[0], out[1]);
                 }
             });
             d.setBounds(0, 0, d.getIntrinsicWidth(), d.getIntrinsicHeight());
@@ -201,35 +196,47 @@ public final class InlineImages {
     }
 
     private static Bitmap decodeScaled(byte[] data) {
-        int targetW = targetWidth();
-        int maxH = maxHeight();
-
         BitmapFactory.Options bounds = new BitmapFactory.Options();
         bounds.inJustDecodeBounds = true;
         BitmapFactory.decodeByteArray(data, 0, data.length, bounds);
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null;
 
+        int[] out = outSize(bounds.outWidth, bounds.outHeight);
+        int outW = out[0], outH = out[1];
+
         BitmapFactory.Options opts = new BitmapFactory.Options();
-        opts.inSampleSize = sampleSize(bounds.outWidth, targetW);
+        opts.inSampleSize = sampleSize(bounds.outWidth, outW);
         Bitmap decoded = BitmapFactory.decodeByteArray(data, 0, data.length, opts);
         if (decoded == null) return null;
-
-        int w = decoded.getWidth();
-        int h = decoded.getHeight();
-        if (w <= 0 || h <= 0) return decoded;
-
-        float scale = (float) targetW / (float) w;
-        int outW = targetW;
-        int outH = Math.round(h * scale);
-        if (outH > maxH) {
-            outH = maxH;
-            outW = Math.round(w * ((float) maxH / (float) h));
-        }
-        if (outW <= 0 || outH <= 0) return decoded;
+        if (decoded.getWidth() == outW && decoded.getHeight() == outH) return decoded;
 
         Bitmap scaled = Bitmap.createScaledBitmap(decoded, outW, outH, true);
         if (scaled != decoded) decoded.recycle();
         return scaled;
+    }
+
+    /**
+     * Target on-screen size for an image of native size w x h. With "scale to fit"
+     * on, fill the comment width (up- or down-scaling). With it off, keep native
+     * size, only downscaling images wider than the comment. Height is always capped.
+     */
+    private static int[] outSize(int w, int h) {
+        if (w <= 0 || h <= 0) return new int[]{Math.max(1, w), Math.max(1, h)};
+        int targetW = targetWidth();
+        int maxH = maxHeight();
+        int outW, outH;
+        if (Settings.scaleInlineImages() || w > targetW) {
+            outW = targetW;
+            outH = Math.round(h * ((float) targetW / (float) w));
+        } else {
+            outW = w;
+            outH = h;
+        }
+        if (outH > maxH) {
+            outH = maxH;
+            outW = Math.round(w * ((float) maxH / (float) h));
+        }
+        return new int[]{Math.max(1, outW), Math.max(1, outH)};
     }
 
     // ---- helpers ---------------------------------------------------------------
