@@ -47,8 +47,11 @@ public final class Settings {
                             .getMethod("currentApplication").invoke(null);
                 }
                 if (ctx != null) {
-                    String name = ctx.getPackageName() + "_preferences";
-                    prefs = ctx.getSharedPreferences(name, Context.MODE_PRIVATE);
+                    // rif overrides the preference name to "settings" in its base
+                    // settings fragment (RifBaseSettingsFragment.s4 ->
+                    // setSharedPreferencesName("settings")), so our checkboxes — and
+                    // these reads — must use that file, not the androidx default.
+                    prefs = ctx.getSharedPreferences("settings", Context.MODE_PRIVATE);
                 }
             } catch (Throwable ignored) {
             }
