@@ -9,7 +9,7 @@ A bundle is a container for many small, independently-toggleable patches. More r
 | Patch | What it does |
 |-------|--------------|
 | **Disable ads** | Removes AppLovin native feed ads, banner ads, and image-viewer ads. Forces the ad-slot gate and `isAdsEnabledAndUnblocked()` checks to `false` and no-ops the ad loaders, so no ad slots render and no ad-network requests are made. |
-| **Inline comment images** | Renders direct image links in comments (i.redd.it / `.jpg` `.png` `.webp` `.gif` ...) as embedded inline images. Loads + scales the image on rif's comment-render worker thread and overlays an `ImageSpan` over the link before the row is shown; the link stays tappable to open full-screen. |
+| **Inline comment images** | Renders image links in comments as embedded inline images. Handles direct links (i.redd.it / `.jpg` `.png` `.webp` `.gif` ...), animated **GIFs**, and resolves common hosts (imgur pages/albums, reddit galleries, redgifs/gfycat) via their `og:image`. Bare URLs are replaced inline; `[text](url)` links keep their text and show the image on the line below. Toggleable via **Settings → ReVanced** (Inline images / Scale inline images to fit). Imgur album/gallery links open in the browser (rif's internal album viewer crashes). |
 
 ## Use with ReVanced Manager (auto-updating)
 

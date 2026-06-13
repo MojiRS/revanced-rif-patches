@@ -1,5 +1,6 @@
 package app.revanced.extension.rif;
 
+import android.content.Intent;
 import android.content.res.Resources;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -9,6 +10,7 @@ import android.graphics.Rect;
 import android.graphics.drawable.Animatable;
 import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Looper;
 import android.os.SystemClock;
@@ -18,6 +20,7 @@ import android.text.style.ImageSpan;
 import android.text.style.URLSpan;
 import android.util.LruCache;
 import android.util.Size;
+import android.view.View;
 import android.widget.TextView;
 
 import java.io.ByteArrayOutputStream;
@@ -26,9 +29,13 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.WeakHashMap;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Inline comment images (static + animated GIFs).
@@ -59,9 +66,21 @@ public final class InlineImages {
     // Animatables currently started per TextView, so a recycled row can stop them.
     private static final WeakHashMap<TextView, List<Animatable>> RUNNING = new WeakHashMap<>();
 
+    // Resolved page-link -> image URL (or "" = no image found), to avoid re-scraping.
+    private static final LruCache<String, String> RESOLVED = new LruCache<>(256);
+
     private static final int MAX_DOWNLOAD_BYTES = 16 * 1024 * 1024;
+    private static final int MAX_HTML_BYTES = 256 * 1024;
     private static final int CONNECT_TIMEOUT_MS = 10_000;
     private static final int READ_TIMEOUT_MS = 15_000;
+
+    // <meta property="og:image[:url|:secure_url]" content="..."> in either attr order.
+    private static final Pattern OG_PROP_FIRST = Pattern.compile(
+            "<meta[^>]+property=[\"']og:image(?::url|:secure_url)?[\"'][^>]+content=[\"']([^\"']+)[\"']",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern OG_CONTENT_FIRST = Pattern.compile(
+            "<meta[^>]+content=[\"']([^\"']+)[\"'][^>]+property=[\"']og:image(?::url|:secure_url)?[\"']",
+            Pattern.CASE_INSENSITIVE);
 
     // ---- background: embed images into the comment spannable -------------------
 
@@ -74,26 +93,48 @@ public final class InlineImages {
             URLSpan[] links = body.getSpans(0, body.length(), URLSpan.class);
             if (links == null || links.length == 0) return;
 
-            for (URLSpan link : links) {
+            // Process in descending start order so inserting an image line for one
+            // link doesn't shift the positions of links we haven't handled yet.
+            List<URLSpan> ordered = new ArrayList<>(Arrays.asList(links));
+            Collections.sort(ordered,
+                    (a, b) -> Integer.compare(body.getSpanStart(b), body.getSpanStart(a)));
+
+            for (URLSpan link : ordered) {
                 try {
-                    String url = link.getURL();
-                    if (!isDirectImage(url)) continue;
+                    String pageUrl = link.getURL();
+                    // Direct image links are used as-is; known media hosts (imgur,
+                    // redgifs, reddit galleries, ...) are resolved to their image via
+                    // the page's og:image tag. Anything else is left as a plain link.
+                    String imageUrl = resolveImageUrl(pageUrl);
+                    if (imageUrl == null) continue;
 
                     int start = body.getSpanStart(link);
                     int end = body.getSpanEnd(link);
                     if (start < 0 || end < 0 || start >= end) continue;
 
-                    byte[] data = fetch(url);
+                    byte[] data = fetch(imageUrl);
                     if (data == null) continue;
 
                     Drawable drawable = toDrawable(data);
                     if (drawable == null) continue;
 
-                    boolean leading = isBlank(body, 0, start);
-                    ImageSpan span = leading
-                            ? new LeadingSpacedImageSpan(drawable)
-                            : new ImageSpan(drawable, ImageSpan.ALIGN_BASELINE);
-                    body.setSpan(span, start, end, Spanned.SPAN_INCLUSIVE_EXCLUSIVE);
+                    if (body.subSequence(start, end).toString().equals(pageUrl)) {
+                        // Bare URL link: replace the link text with the image inline.
+                        boolean leading = isBlank(body, 0, start);
+                        body.setSpan(
+                                leading ? new LeadingSpacedImageSpan(drawable)
+                                        : new ImageSpan(drawable, ImageSpan.ALIGN_BASELINE),
+                                start, end, Spanned.SPAN_INCLUSIVE_EXCLUSIVE);
+                    } else {
+                        // [text](url) link: keep the visible text and render the image
+                        // on its own line just below it (U+FFFC = object replacement).
+                        // LeadingSpacedImageSpan adds ~1/3 line of space above the
+                        // image so it doesn't crowd the link text, matching the gap
+                        // used for an image directly under a comment header.
+                        body.insert(end, "\n￼");
+                        body.setSpan(new LeadingSpacedImageSpan(drawable),
+                                end + 1, end + 2, Spanned.SPAN_INCLUSIVE_EXCLUSIVE);
+                    }
                 } catch (Throwable ignored) {
                     // leave this link as a plain link
                 }
@@ -160,6 +201,31 @@ public final class InlineImages {
                 tv.removeCallbacks(what);
             }
         };
+    }
+
+    // ---- graceful imgur album/gallery handling ---------------------------------
+
+    /**
+     * Called from RedditBodyLinkSpan.onClick. rif's internal imgur album/gallery
+     * viewer crashes (NoSuchMethodError in its own loader), so for those links we
+     * open the system browser instead and report that we handled the click.
+     */
+    public static boolean handleAlbumLink(URLSpan span, View view) {
+        try {
+            if (span == null || view == null) return false;
+            String url = span.getURL();
+            if (url == null) return false;
+            String u = url.toLowerCase(Locale.US);
+            if (!(u.contains("imgur.com/a/") || u.contains("imgur.com/gallery/"))) {
+                return false;
+            }
+            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            view.getContext().startActivity(intent);
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     // ---- decoding --------------------------------------------------------------
@@ -269,6 +335,94 @@ public final class InlineImages {
             return true;
         }
         return u.startsWith("https://i.redd.it/") || u.startsWith("https://preview.redd.it/");
+    }
+
+    /**
+     * Maps a comment link to an image URL to embed, or null to leave it as a link.
+     * Direct image links pass through; known media-host page links are resolved to
+     * their image via the page's og:image meta tag (with a small result cache).
+     */
+    private static String resolveImageUrl(String url) {
+        if (url == null) return null;
+        if (isDirectImage(url)) return url;
+        if (!isResolvableHost(url)) return null;
+
+        String cached = RESOLVED.get(url);
+        if (cached != null) return cached.isEmpty() ? null : cached;
+
+        String image = fetchOgImage(url);
+        RESOLVED.put(url, image == null ? "" : image);
+        return image;
+    }
+
+    private static boolean isResolvableHost(String url) {
+        String u = url.toLowerCase(Locale.US);
+        return u.startsWith("https://imgur.com/")
+                || u.startsWith("https://www.imgur.com/")
+                || u.startsWith("https://m.imgur.com/")
+                || u.startsWith("https://redgifs.com/")
+                || u.startsWith("https://www.redgifs.com/")
+                || u.startsWith("https://gfycat.com/")
+                || u.startsWith("https://www.gfycat.com/")
+                || u.contains("reddit.com/gallery/");
+    }
+
+    private static String fetchOgImage(String pageUrl) {
+        try {
+            String html = fetchText(pageUrl);
+            if (html == null) return null;
+            Matcher m = OG_PROP_FIRST.matcher(html);
+            if (!m.find()) {
+                m = OG_CONTENT_FIRST.matcher(html);
+                if (!m.find()) return null;
+            }
+            String image = decodeHtmlEntities(m.group(1));
+            if (image == null || image.isEmpty()) return null;
+            if (image.startsWith("//")) image = "https:" + image;
+            return image;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private static String fetchText(String url) {
+        HttpURLConnection conn = null;
+        try {
+            conn = (HttpURLConnection) new URL(url).openConnection();
+            conn.setConnectTimeout(CONNECT_TIMEOUT_MS);
+            conn.setReadTimeout(READ_TIMEOUT_MS);
+            conn.setInstanceFollowRedirects(true);
+            conn.setRequestProperty("User-Agent",
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 rif-inline-images");
+            conn.setRequestProperty("Accept", "text/html,application/xhtml+xml");
+            if (conn.getResponseCode() != HttpURLConnection.HTTP_OK) return null;
+
+            InputStream in = conn.getInputStream();
+            ByteArrayOutputStream out = new ByteArrayOutputStream(32 * 1024);
+            byte[] buf = new byte[16 * 1024];
+            int n;
+            int total = 0;
+            while ((n = in.read(buf)) != -1) {
+                out.write(buf, 0, n);
+                total += n;
+                if (total > MAX_HTML_BYTES) break; // og tags live in <head>
+            }
+            in.close();
+            return new String(out.toByteArray(), "UTF-8");
+        } catch (Throwable t) {
+            return null;
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+    }
+
+    private static String decodeHtmlEntities(String s) {
+        if (s == null) return null;
+        return s.replace("&amp;", "&")
+                .replace("&#38;", "&")
+                .replace("&#x26;", "&")
+                .replace("&#x2F;", "/")
+                .replace("&#47;", "/");
     }
 
     private static byte[] fetch(String url) {

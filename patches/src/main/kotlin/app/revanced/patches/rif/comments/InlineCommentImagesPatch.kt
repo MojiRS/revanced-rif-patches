@@ -1,6 +1,9 @@
 package app.revanced.patches.rif.comments
 
+import app.revanced.patcher.extensions.ExternalLabel
 import app.revanced.patcher.extensions.InstructionExtensions.addInstructions
+import app.revanced.patcher.extensions.InstructionExtensions.addInstructionsWithLabels
+import app.revanced.patcher.extensions.InstructionExtensions.getInstruction
 import app.revanced.patcher.extensions.InstructionExtensions.instructions
 import app.revanced.patcher.fingerprint
 import app.revanced.patcher.patch.bytecodePatch
@@ -67,6 +70,16 @@ internal val commentBodyBindFingerprint = fingerprint {
     }
 }
 
+// RedditBodyLinkSpan.onClick(View) opens a tapped comment link (and is what fires
+// when the inline album cover is tapped). rif's internal imgur album/gallery viewer
+// crashes, so we intercept those links and open them in a browser instead.
+internal val redditBodyLinkClickFingerprint = fingerprint {
+    custom { method, classDef ->
+        classDef.type == "Lcom/andrewshu/android/reddit/comments/spans/RedditBodyLinkSpan;" &&
+            method.name == "onClick"
+    }
+}
+
 @Suppress("unused")
 val inlineCommentImagesPatch = bytecodePatch(
     name = "Inline comment images",
@@ -101,6 +114,21 @@ val inlineCommentImagesPatch = bytecodePatch(
         bind.addInstructions(
             setTextIndex + 1,
             "invoke-static { v$textViewRegister }, $EXTENSION->attach(Landroid/widget/TextView;)V",
+        )
+
+        // 3) Intercept imgur album/gallery link clicks and open them in a browser
+        // (rif's internal viewer crashes on them). p0 = the span (a URLSpan),
+        // p1 = the clicked View.
+        val onClick = redditBodyLinkClickFingerprint.method
+        onClick.addInstructionsWithLabels(
+            0,
+            """
+                invoke-static { p0, p1 }, $EXTENSION->handleAlbumLink(Landroid/text/style/URLSpan;Landroid/view/View;)Z
+                move-result v0
+                if-eqz v0, :original
+                return-void
+            """,
+            ExternalLabel("original", onClick.getInstruction(0)),
         )
     }
 }
