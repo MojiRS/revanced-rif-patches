@@ -118,8 +118,10 @@ public final class InlineImages {
                     Drawable drawable = toDrawable(data);
                     if (drawable == null) continue;
 
-                    if (body.subSequence(start, end).toString().equals(pageUrl)) {
-                        // Bare URL link: replace the link text with the image inline.
+                    String linkText = body.subSequence(start, end).toString();
+                    if (linkText.equals(pageUrl) || isHideableLinkText(linkText)) {
+                        // Bare URL, or a Reddit-app media marker like "[gif]": replace
+                        // the link text with the image inline (hide the text).
                         boolean leading = isBlank(body, 0, start);
                         body.setSpan(
                                 leading ? new LeadingSpacedImageSpan(drawable)
@@ -231,7 +233,9 @@ public final class InlineImages {
     // ---- decoding --------------------------------------------------------------
 
     private static Drawable toDrawable(byte[] data) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && isGif(data)) {
+        // GIF and WebP go through ImageDecoder (API 28+), which yields an
+        // AnimatedImageDrawable for animated content and a static drawable otherwise.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && (isGif(data) || isWebp(data))) {
             Drawable animated = decodeAnimated(data);
             if (animated != null) return animated;
         }
@@ -322,6 +326,13 @@ public final class InlineImages {
                 && data[0] == 'G' && data[1] == 'I' && data[2] == 'F' && data[3] == '8';
     }
 
+    private static boolean isWebp(byte[] data) {
+        // RIFF....WEBP. ImageDecoder animates it if it's an animated WebP.
+        return data != null && data.length >= 12
+                && data[0] == 'R' && data[1] == 'I' && data[2] == 'F' && data[3] == 'F'
+                && data[8] == 'W' && data[9] == 'E' && data[10] == 'B' && data[11] == 'P';
+    }
+
     private static boolean isDirectImage(String url) {
         if (url == null) return false;
         String u = url.toLowerCase(Locale.US);
@@ -345,6 +356,11 @@ public final class InlineImages {
     private static String resolveImageUrl(String url) {
         if (url == null) return null;
         if (isDirectImage(url)) return url;
+
+        // Giphy has a clean id -> animated-GIF URL mapping; prefer it over scraping.
+        String giphy = giphyGifUrl(url);
+        if (giphy != null) return giphy;
+
         if (!isResolvableHost(url)) return null;
 
         String cached = RESOLVED.get(url);
@@ -353,6 +369,46 @@ public final class InlineImages {
         String image = fetchOgImage(url);
         RESOLVED.put(url, image == null ? "" : image);
         return image;
+    }
+
+    /**
+     * Maps a Giphy link to its animated-GIF media URL, or null if not Giphy. The id
+     * is the last '-' segment of a /gifs/ slug, or the segment before /giphy.* on a
+     * media host.
+     */
+    private static String giphyGifUrl(String url) {
+        try {
+            String u = url.toLowerCase(Locale.US);
+            String id = null;
+            int gifs = u.indexOf("giphy.com/gifs/");
+            if (gifs >= 0) {
+                String path = url.substring(gifs + "giphy.com/gifs/".length());
+                int cut = indexOfAny(path, "/?#");
+                if (cut >= 0) path = path.substring(0, cut);
+                int dash = path.lastIndexOf('-');
+                id = dash >= 0 ? path.substring(dash + 1) : path;
+            } else if (u.contains(".giphy.com/media/")) {
+                int g = url.indexOf("/giphy.");
+                if (g >= 0) {
+                    String before = url.substring(0, g);
+                    int s = before.lastIndexOf('/');
+                    if (s >= 0) id = before.substring(s + 1);
+                }
+            }
+            if (id == null || id.isEmpty() || !id.matches("[A-Za-z0-9]+")) return null;
+            return "https://media.giphy.com/media/" + id + "/giphy.gif";
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private static int indexOfAny(String s, String chars) {
+        int best = -1;
+        for (int i = 0; i < chars.length(); i++) {
+            int idx = s.indexOf(chars.charAt(i));
+            if (idx >= 0 && (best < 0 || idx < best)) best = idx;
+        }
+        return best;
     }
 
     private static boolean isResolvableHost(String url) {
@@ -364,6 +420,8 @@ public final class InlineImages {
                 || u.startsWith("https://www.redgifs.com/")
                 || u.startsWith("https://gfycat.com/")
                 || u.startsWith("https://www.gfycat.com/")
+                || u.contains("giphy.com/")
+                || u.contains("tenor.com/view/")
                 || u.contains("reddit.com/gallery/");
     }
 
@@ -482,6 +540,16 @@ public final class InlineImages {
             if (!Character.isWhitespace(cs.charAt(i))) return false;
         }
         return true;
+    }
+
+    /**
+     * Link display text that is just a media marker (e.g. the Reddit app renders a
+     * gif upload as a "[gif]" link). For these we hide the text and show the image
+     * inline rather than keeping the marker visible.
+     */
+    private static boolean isHideableLinkText(String text) {
+        if (text == null) return false;
+        return text.trim().equalsIgnoreCase("[gif]");
     }
 
     /**
