@@ -18,6 +18,7 @@ import android.text.SpannableStringBuilder;
 import android.text.Spanned;
 import android.text.style.ImageSpan;
 import android.text.style.URLSpan;
+import android.util.Log;
 import android.util.LruCache;
 import android.util.Size;
 import android.view.View;
@@ -69,10 +70,14 @@ public final class InlineImages {
     // Resolved page-link -> image URL (or "" = no image found), to avoid re-scraping.
     private static final LruCache<String, String> RESOLVED = new LruCache<>(256);
 
-    private static final int MAX_DOWNLOAD_BYTES = 16 * 1024 * 1024;
+    private static final String TAG = "RifInlineImages";
+    // Browser-like UA; some CDNs reject unusual agents. Used for images and pages.
+    private static final String USER_AGENT =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 rif-inline-images";
+    private static final int MAX_DOWNLOAD_BYTES = 32 * 1024 * 1024;
     private static final int MAX_HTML_BYTES = 256 * 1024;
     private static final int CONNECT_TIMEOUT_MS = 10_000;
-    private static final int READ_TIMEOUT_MS = 15_000;
+    private static final int READ_TIMEOUT_MS = 30_000;
 
     // <meta property="og:image[:url|:secure_url]" content="..."> in either attr order.
     private static final Pattern OG_PROP_FIRST = Pattern.compile(
@@ -116,7 +121,10 @@ public final class InlineImages {
                     if (data == null) continue;
 
                     Drawable drawable = toDrawable(data);
-                    if (drawable == null) continue;
+                    if (drawable == null) {
+                        Log.w(TAG, "image decode failed: " + imageUrl);
+                        continue;
+                    }
 
                     String linkText = body.subSequence(start, end).toString();
                     if (linkText.equals(pageUrl) || isHideableLinkText(linkText)) {
@@ -450,8 +458,7 @@ public final class InlineImages {
             conn.setConnectTimeout(CONNECT_TIMEOUT_MS);
             conn.setReadTimeout(READ_TIMEOUT_MS);
             conn.setInstanceFollowRedirects(true);
-            conn.setRequestProperty("User-Agent",
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 rif-inline-images");
+            conn.setRequestProperty("User-Agent", USER_AGENT);
             conn.setRequestProperty("Accept", "text/html,application/xhtml+xml");
             if (conn.getResponseCode() != HttpURLConnection.HTTP_OK) return null;
 
@@ -498,9 +505,13 @@ public final class InlineImages {
             conn.setConnectTimeout(CONNECT_TIMEOUT_MS);
             conn.setReadTimeout(READ_TIMEOUT_MS);
             conn.setInstanceFollowRedirects(true);
-            conn.setRequestProperty("User-Agent", "rif-inline-images");
+            conn.setRequestProperty("User-Agent", USER_AGENT);
             conn.setRequestProperty("Accept", "image/*");
-            if (conn.getResponseCode() != HttpURLConnection.HTTP_OK) return null;
+            int code = conn.getResponseCode();
+            if (code != HttpURLConnection.HTTP_OK) {
+                Log.w(TAG, "image fetch HTTP " + code + ": " + url);
+                return null;
+            }
 
             InputStream in = conn.getInputStream();
             ByteArrayOutputStream out = new ByteArrayOutputStream(32 * 1024);
@@ -509,12 +520,16 @@ public final class InlineImages {
             int total = 0;
             while ((n = in.read(buf)) != -1) {
                 total += n;
-                if (total > MAX_DOWNLOAD_BYTES) return null;
+                if (total > MAX_DOWNLOAD_BYTES) {
+                    Log.w(TAG, "image exceeds " + MAX_DOWNLOAD_BYTES + " bytes: " + url);
+                    return null;
+                }
                 out.write(buf, 0, n);
             }
             in.close();
             return out.toByteArray();
         } catch (Throwable t) {
+            Log.w(TAG, "image fetch error: " + url + " (" + t + ")");
             return null;
         } finally {
             if (conn != null) conn.disconnect();
