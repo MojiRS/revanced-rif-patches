@@ -50,7 +50,9 @@ import java.util.regex.Pattern;
  *  - {@link #attach(TextView)} is called from rif's comment ViewHolder bind
  *    (n2.o.h, right after setText) on the main thread. It wires each animated
  *    drawable's callback to the TextView and starts it, so frames invalidate
- *    only that TextView. Re-binds stop the previously-started animatables.
+ *    only that TextView. Recycling to a different
+     *    comment stops the drawables that left; an in-place rebind (e.g. a vote)
+     *    leaves running GIFs alone.
  */
 public final class InlineImages {
 
@@ -159,10 +161,36 @@ public final class InlineImages {
         try {
             if (tv == null) return;
 
-            // Stop animatables started for the previous comment on this recycled view.
-            List<Animatable> prev = RUNNING.remove(tv);
+            // Animatables shown in this TextView's current text.
+            CharSequence cs = tv.getText();
+            List<Animatable> current = new ArrayList<>();
+            if (cs instanceof Spanned) {
+                Spanned sp = (Spanned) cs;
+                Drawable.Callback cb = null;
+                for (ImageSpan span : sp.getSpans(0, sp.length(), ImageSpan.class)) {
+                    Drawable d = span.getDrawable();
+                    if (!(d instanceof Animatable)) continue;
+                    Animatable anim = (Animatable) d;
+                    current.add(anim);
+                    // Only wire up + start ones that aren't already animating. Leaving a
+                    // running drawable untouched means an in-place rebind of the same
+                    // comment (e.g. casting a vote, which re-binds the row to update the
+                    // score) won't stop/restart the GIF.
+                    if (!anim.isRunning()) {
+                        if (cb == null) cb = callbackFor(tv);
+                        d.setCallback(cb);
+                        anim.start();
+                    }
+                }
+            }
+
+            // Stop only animatables from the previous bind that are no longer shown
+            // here (a genuine recycle to a different comment), so they stop invalidating
+            // this view. Ones still present are left running, preserving their position.
+            List<Animatable> prev = current.isEmpty() ? RUNNING.remove(tv) : RUNNING.put(tv, current);
             if (prev != null) {
                 for (Animatable a : prev) {
+                    if (current.contains(a)) continue;
                     try {
                         a.stop();
                         if (a instanceof Drawable) ((Drawable) a).setCallback(null);
@@ -170,26 +198,6 @@ public final class InlineImages {
                     }
                 }
             }
-
-            CharSequence cs = tv.getText();
-            if (!(cs instanceof Spanned)) return;
-            Spanned sp = (Spanned) cs;
-            ImageSpan[] spans = sp.getSpans(0, sp.length(), ImageSpan.class);
-            if (spans.length == 0) return;
-
-            Drawable.Callback cb = null;
-            List<Animatable> started = new ArrayList<>();
-            for (ImageSpan span : spans) {
-                Drawable d = span.getDrawable();
-                if (d instanceof Animatable) {
-                    if (cb == null) cb = callbackFor(tv);
-                    d.setCallback(cb);
-                    Animatable anim = (Animatable) d;
-                    if (!anim.isRunning()) anim.start();
-                    started.add(anim);
-                }
-            }
-            if (!started.isEmpty()) RUNNING.put(tv, started);
         } catch (Throwable ignored) {
         }
     }
