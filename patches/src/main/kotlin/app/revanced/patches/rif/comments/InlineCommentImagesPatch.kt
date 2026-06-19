@@ -70,6 +70,32 @@ internal val commentBodyBindFingerprint = fingerprint {
     }
 }
 
+// ThreadThing.e(SpannableStringBuilder) is the i0 render callback for a text post's
+// selftext body — same shape as CommentThing.e. Embed images here too.
+internal val threadSelftextEmbedFingerprint = fingerprint {
+    custom { method, classDef ->
+        classDef.type == "Lcom/andrewshu/android/reddit/things/objects/ThreadThing;" &&
+            method.name == "e" &&
+            method.returnType == "V" &&
+            method.parameterTypes.size == 1 &&
+            method.parameterTypes.first().toString() == "Landroid/text/SpannableStringBuilder;"
+    }
+}
+
+// e5.g binds the post header; its selftext-bind method (the one reading
+// ThreadThing.C0()) sets the selftext on a TextView. We attach() after that
+// setText so selftext GIFs animate, mirroring the comment bind.
+internal val selftextBindFingerprint = fingerprint {
+    custom { method, classDef ->
+        classDef.type == "Le5/g;" &&
+            method.implementation?.instructions?.any { insn ->
+                insn is ReferenceInstruction &&
+                    insn.reference.toString() ==
+                    "Lcom/andrewshu/android/reddit/things/objects/ThreadThing;->C0()Ljava/lang/CharSequence;"
+            } == true
+    }
+}
+
 // RedditBodyLinkSpan.onClick(View) opens a tapped comment link (and is what fires
 // when the inline album cover is tapped). rif's internal imgur album/gallery viewer
 // crashes, so we intercept those links and open them in a browser instead.
@@ -83,7 +109,7 @@ internal val redditBodyLinkClickFingerprint = fingerprint {
 @Suppress("unused")
 val inlineCommentImagesPatch = bytecodePatch(
     name = "Inline comment images",
-    description = "Renders direct image links in comments as embedded inline images (static + animated GIFs).",
+    description = "Renders image links in comment and text-post bodies as embedded inline images (static + animated GIFs, common hosts).",
 ) {
     compatibleWith(RIF_PACKAGE)
     dependsOn(inlineImagesSettingsResourcePatch, revancedSettingsPatch)
@@ -92,29 +118,34 @@ val inlineCommentImagesPatch = bytecodePatch(
     extendWith("extensions/extension.rve")
 
     execute {
-        // 1) Embed images into the comment spannable (background, before display).
-        // p1 = the SpannableStringBuilder argument.
-        commentRenderedBodyFingerprint.method.addInstructions(
-            0,
-            "invoke-static { p1 }, $EXTENSION->embed(Landroid/text/SpannableStringBuilder;)V",
-        )
+        // 1) Embed images into the comment + selftext spannables (background, before
+        // display). p1 = the SpannableStringBuilder argument.
+        for (fingerprint in listOf(commentRenderedBodyFingerprint, threadSelftextEmbedFingerprint)) {
+            fingerprint.method.addInstructions(
+                0,
+                "invoke-static { p1 }, $EXTENSION->embed(Landroid/text/SpannableStringBuilder;)V",
+            )
+        }
 
-        // 2) Start GIF animation once the body TextView is bound (main thread).
-        val bind = commentBodyBindFingerprint.method
-        val setTextIndex = bind.instructions.indexOfFirst { insn ->
-            insn.opcode == Opcode.INVOKE_VIRTUAL &&
-                (insn as? ReferenceInstruction)?.reference?.toString() ==
-                "Landroid/widget/TextView;->setText(Ljava/lang/CharSequence;)V"
+        // 2) Start GIF animation once the body TextView is bound (main thread): inject
+        // attach(textView) right after the body setText, in both the comment ViewHolder
+        // bind (n2.o.h) and the selftext bind (e5.g). Each has one TextView.setText.
+        for (bind in listOf(commentBodyBindFingerprint.method, selftextBindFingerprint.method)) {
+            val setTextIndex = bind.instructions.indexOfFirst { insn ->
+                insn.opcode == Opcode.INVOKE_VIRTUAL &&
+                    (insn as? ReferenceInstruction)?.reference?.toString() ==
+                    "Landroid/widget/TextView;->setText(Ljava/lang/CharSequence;)V"
+            }
+            if (setTextIndex == -1) {
+                throw PatchException("body setText not found in ${bind.definingClass}")
+            }
+            val textViewRegister =
+                (bind.instructions.elementAt(setTextIndex) as FiveRegisterInstruction).registerC
+            bind.addInstructions(
+                setTextIndex + 1,
+                "invoke-static { v$textViewRegister }, $EXTENSION->attach(Landroid/widget/TextView;)V",
+            )
         }
-        if (setTextIndex == -1) {
-            throw PatchException("comment body setText not found in n2.o.h")
-        }
-        val textViewRegister =
-            (bind.instructions.elementAt(setTextIndex) as FiveRegisterInstruction).registerC
-        bind.addInstructions(
-            setTextIndex + 1,
-            "invoke-static { v$textViewRegister }, $EXTENSION->attach(Landroid/widget/TextView;)V",
-        )
 
         // 3) Intercept imgur album/gallery link clicks and open them in a browser
         // (rif's internal viewer crashes on them). p0 = the span (a URLSpan),
