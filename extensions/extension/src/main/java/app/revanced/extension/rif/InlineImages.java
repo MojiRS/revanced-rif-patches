@@ -1,31 +1,43 @@
 package app.revanced.extension.rif;
 
-import android.content.Intent;
 import android.content.res.Resources;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
 import android.graphics.ImageDecoder;
 import android.graphics.Paint;
+import android.graphics.Path;
 import android.graphics.Rect;
+import android.graphics.RectF;
 import android.graphics.drawable.Animatable;
 import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
-import android.net.Uri;
 import android.os.Build;
+import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.text.Layout;
+import android.text.Selection;
+import android.text.Spannable;
 import android.text.SpannableStringBuilder;
 import android.text.Spanned;
+import android.text.TextPaint;
+import android.text.style.ClickableSpan;
 import android.text.style.ImageSpan;
 import android.text.style.URLSpan;
 import android.util.Log;
 import android.util.LruCache;
 import android.util.Size;
+import android.view.MotionEvent;
 import android.view.View;
 import android.widget.TextView;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.lang.ref.WeakReference;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.ByteBuffer;
@@ -50,9 +62,13 @@ import java.util.regex.Pattern;
  *  - {@link #attach(TextView)} is called from rif's comment ViewHolder bind
  *    (n2.o.h, right after setText) on the main thread. It wires each animated
  *    drawable's callback to the TextView and starts it, so frames invalidate
- *    only that TextView. Recycling to a different
-     *    comment stops the drawables that left; an in-place rebind (e.g. a vote)
-     *    leaves running GIFs alone.
+ *    only that TextView. Recycling to a different comment stops the drawables
+ *    that left; an in-place rebind (e.g. a vote) leaves running GIFs alone.
+ *
+ * Multi-image imgur albums get an {@link AlbumImageSpan}: a fixed-size box showing one
+ * image, with ◀ ▶ buttons and an "n/x" badge. Taps reach it through rif's own link
+ * movement method (which dispatches any ClickableSpan); the tap position comes from a
+ * passive touch recorder installed by attach().
  */
 public final class InlineImages {
 
@@ -66,8 +82,20 @@ public final class InlineImages {
         }
     };
 
-    // Animatables currently started per TextView, so a recycled row can stop them.
-    private static final WeakHashMap<TextView, List<Animatable>> RUNNING = new WeakHashMap<>();
+    // Per-TextView animation state: the animatables shown there, and the Drawable.Callback
+    // wired to them. Drawable.setCallback() only keeps a WeakReference, so this map is
+    // what keeps the callback alive. The callback holds the TextView weakly, so values
+    // never pin their (weak) keys.
+    private static final WeakHashMap<TextView, Bound> RUNNING = new WeakHashMap<>();
+
+    private static final class Bound {
+        final Drawable.Callback callback;
+        List<Animatable> anims = Collections.emptyList();
+
+        Bound(TextView tv) {
+            callback = new ViewCallback(tv);
+        }
+    }
 
     // Resolved page-link -> image URL (or "" = no image found), to avoid re-scraping.
     private static final LruCache<String, String> RESOLVED = new LruCache<>(256);
@@ -78,6 +106,32 @@ public final class InlineImages {
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 rif-inline-images";
     private static final int MAX_DOWNLOAD_BYTES = 32 * 1024 * 1024;
     private static final int MAX_HTML_BYTES = 256 * 1024;
+    private static final int MAX_JSON_BYTES = 2 * 1024 * 1024;
+
+    // rif's own imgur API client ID (already shipped in the app and sent by its other imgur
+    // requests). Used to list an album's images.
+    private static final String IMGUR_AUTH = "Client-ID 4d7e2f74f1a519c";
+    // imgur.com/a/<id> or imgur.com/gallery/<id> (plain ids only).
+    private static final Pattern IMGUR_ALBUM = Pattern.compile(
+            "^https?://(?:www\\.|m\\.)?imgur\\.com/(a|gallery)/([A-Za-z0-9]+)/?(?:[?#].*)?$",
+            Pattern.CASE_INSENSITIVE);
+    // Album link -> its image URLs (empty list = not listable; fall back to og:image).
+    private static final LruCache<String, List<String>> ALBUMS = new LruCache<>(128);
+
+    // Last touch position per TextView (recorded by TOUCH_RECORDER), so an album span's
+    // onClick knows which part of the image was tapped. Values never reference keys.
+    private static final WeakHashMap<View, float[]> LAST_TOUCH = new WeakHashMap<>();
+    // Passive: records the position and never consumes the event, so rif's own touch
+    // handling (its link movement method) runs exactly as before.
+    private static final View.OnTouchListener TOUCH_RECORDER = (v, event) -> {
+        int action = event.getActionMasked();
+        if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_UP) {
+            LAST_TOUCH.put(v, new float[]{event.getX(), event.getY()});
+        }
+        return false;
+    };
+
+    private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static final int CONNECT_TIMEOUT_MS = 10_000;
     private static final int READ_TIMEOUT_MS = 30_000;
 
@@ -109,11 +163,14 @@ public final class InlineImages {
             for (URLSpan link : ordered) {
                 try {
                     String pageUrl = link.getURL();
-                    // Direct image links are used as-is; known media hosts (imgur,
-                    // redgifs, reddit galleries, ...) are resolved to their image via
-                    // the page's og:image tag. Anything else is left as a plain link.
-                    String imageUrl = resolveImageUrl(pageUrl);
+                    // imgur albums are listed via the API (so multi-image albums can be
+                    // cycled inline). Direct image links are used as-is; other known media
+                    // hosts (imgur pages, redgifs, reddit galleries, ...) are resolved to
+                    // their image via the page's og:image tag. Anything else stays a link.
+                    List<String> album = imgurAlbumImages(pageUrl);
+                    String imageUrl = album != null ? album.get(0) : resolveImageUrl(pageUrl);
                     if (imageUrl == null) continue;
+                    boolean multiImage = album != null && album.size() > 1;
 
                     int start = body.getSpanStart(link);
                     int end = body.getSpanEnd(link);
@@ -132,11 +189,19 @@ public final class InlineImages {
                     if (linkText.equals(pageUrl) || isHideableLinkText(linkText)) {
                         // Bare URL, or a Reddit-app media marker like "[gif]": replace
                         // the link text with the image inline (hide the text).
-                        boolean leading = isBlank(body, 0, start);
-                        body.setSpan(
-                                leading ? new LeadingSpacedImageSpan(drawable)
-                                        : new ImageSpan(drawable, ImageSpan.ALIGN_BASELINE),
-                                start, end, Spanned.SPAN_INCLUSIVE_EXCLUSIVE);
+                        // An image that starts its own line (at the top of the comment, or
+                        // after a newline) needs the padded span: a plain ALIGN_BASELINE
+                        // ImageSpan alone on a line is drawn shifted up by the font descent,
+                        // overlapping (clipping) the bottom of the previous line.
+                        boolean leading = startsLine(body, start);
+                        if (multiImage) {
+                            setAlbumSpan(body, new AlbumImageSpan(drawable, album, link, leading), start, end);
+                        } else {
+                            body.setSpan(
+                                    leading ? new LeadingSpacedImageSpan(drawable)
+                                            : new ImageSpan(drawable, ImageSpan.ALIGN_BASELINE),
+                                    start, end, Spanned.SPAN_INCLUSIVE_EXCLUSIVE);
+                        }
                     } else {
                         // [text](url) link: keep the visible text and render the image
                         // on its own line just below it (U+FFFC = object replacement).
@@ -144,8 +209,15 @@ public final class InlineImages {
                         // image so it doesn't crowd the link text, matching the gap
                         // used for an image directly under a comment header.
                         body.insert(end, "\n￼");
-                        body.setSpan(new LeadingSpacedImageSpan(drawable),
-                                end + 1, end + 2, Spanned.SPAN_INCLUSIVE_EXCLUSIVE);
+                        if (multiImage) {
+                            setAlbumSpan(body, new AlbumImageSpan(drawable, album, link, true), end + 1, end + 2);
+                        } else {
+                            ImageSpan image = new LeadingSpacedImageSpan(drawable);
+                            body.setSpan(image, end + 1, end + 2, Spanned.SPAN_INCLUSIVE_EXCLUSIVE);
+                            // The image sits outside the link span here, so make it open the
+                            // link itself (bare-link images already sit on the link span).
+                            setImageClickSpan(body, image, link, end + 1, end + 2);
+                        }
                     }
                 } catch (Throwable ignored) {
                     // leave this link as a plain link
@@ -161,89 +233,403 @@ public final class InlineImages {
         try {
             if (tv == null) return;
 
-            // Animatables shown in this TextView's current text.
+            Bound bound = RUNNING.get(tv);
+            if (bound == null) bound = new Bound(tv);
+            List<Animatable> prev = bound.anims;
+
+            // Animatables shown in this TextView's current text. Each one is (re)pointed
+            // at this view's callback, which makes this view its owner. Ones that are
+            // already animating are NOT restarted, so an in-place rebind of the same
+            // comment (e.g. a vote, which re-binds the row to update the score) or a
+            // rebind into a different holder (change animations) keeps the GIF playing.
             CharSequence cs = tv.getText();
             List<Animatable> current = new ArrayList<>();
             if (cs instanceof Spanned) {
                 Spanned sp = (Spanned) cs;
-                Drawable.Callback cb = null;
+                // Image tap handlers need the tap position (rif's body TextViews have no
+                // touch listener of their own; this one never consumes events).
+                if (sp.getSpans(0, sp.length(), ImageClickSpan.class).length > 0) {
+                    tv.setOnTouchListener(TOUCH_RECORDER);
+                }
                 for (ImageSpan span : sp.getSpans(0, sp.length(), ImageSpan.class)) {
                     Drawable d = span.getDrawable();
                     if (!(d instanceof Animatable)) continue;
                     Animatable anim = (Animatable) d;
                     current.add(anim);
-                    // Only wire up + start ones that aren't already animating. Leaving a
-                    // running drawable untouched means an in-place rebind of the same
-                    // comment (e.g. casting a vote, which re-binds the row to update the
-                    // score) won't stop/restart the GIF.
-                    if (!anim.isRunning()) {
-                        if (cb == null) cb = callbackFor(tv);
-                        d.setCallback(cb);
-                        anim.start();
-                    }
+                    if (d.getCallback() != bound.callback) d.setCallback(bound.callback);
+                    if (!anim.isRunning()) anim.start();
                 }
             }
 
-            // Stop only animatables from the previous bind that are no longer shown
-            // here (a genuine recycle to a different comment), so they stop invalidating
-            // this view. Ones still present are left running, preserving their position.
-            List<Animatable> prev = current.isEmpty() ? RUNNING.remove(tv) : RUNNING.put(tv, current);
-            if (prev != null) {
-                for (Animatable a : prev) {
-                    if (current.contains(a)) continue;
-                    try {
-                        a.stop();
-                        if (a instanceof Drawable) ((Drawable) a).setCallback(null);
-                    } catch (Throwable ignored) {
-                    }
+            // Stop animatables from the previous bind that left this view (a recycle to a
+            // different comment) — but only ones this view still owns. If another view
+            // has since claimed one (same comment bound elsewhere), leave it running.
+            for (Animatable a : prev) {
+                if (current.contains(a)) continue;
+                try {
+                    Drawable d = (Drawable) a;
+                    if (d.getCallback() != bound.callback) continue;
+                    a.stop();
+                    d.setCallback(null);
+                } catch (Throwable ignored) {
                 }
+            }
+
+            if (current.isEmpty()) {
+                RUNNING.remove(tv);
+            } else {
+                bound.anims = current;
+                RUNNING.put(tv, bound);
             }
         } catch (Throwable ignored) {
         }
     }
 
-    private static Drawable.Callback callbackFor(final TextView tv) {
-        return new Drawable.Callback() {
-            @Override
-            public void invalidateDrawable(Drawable who) {
-                tv.invalidate();
-            }
+    /** Drawable.Callback that invalidates a TextView it holds only weakly. */
+    private static final class ViewCallback implements Drawable.Callback {
+        private final WeakReference<TextView> view;
 
-            @Override
-            public void scheduleDrawable(Drawable who, Runnable what, long when) {
-                tv.postDelayed(what, Math.max(0, when - SystemClock.uptimeMillis()));
-            }
+        ViewCallback(TextView tv) {
+            view = new WeakReference<>(tv);
+        }
 
-            @Override
-            public void unscheduleDrawable(Drawable who, Runnable what) {
-                tv.removeCallbacks(what);
-            }
-        };
+        @Override
+        public void invalidateDrawable(Drawable who) {
+            TextView tv = view.get();
+            if (tv != null) tv.invalidate();
+        }
+
+        @Override
+        public void scheduleDrawable(Drawable who, Runnable what, long when) {
+            TextView tv = view.get();
+            if (tv != null) tv.postDelayed(what, Math.max(0, when - SystemClock.uptimeMillis()));
+        }
+
+        @Override
+        public void unscheduleDrawable(Drawable who, Runnable what) {
+            TextView tv = view.get();
+            if (tv != null) tv.removeCallbacks(what);
+        }
     }
 
-    // ---- graceful imgur album/gallery handling ---------------------------------
+    // ---- imgur albums -----------------------------------------------------------
 
     /**
-     * Called from RedditBodyLinkSpan.onClick. rif's internal imgur album/gallery
-     * viewer crashes (NoSuchMethodError in its own loader), so for those links we
-     * open the system browser instead and report that we handled the click.
+     * The image URLs of an imgur album/gallery link, via the imgur API (rif's client ID),
+     * or null if the link isn't one or the album can't be listed (callers then fall back to
+     * the og:image cover). Network; background thread only.
      */
-    public static boolean handleAlbumLink(URLSpan span, View view) {
-        try {
-            if (span == null || view == null) return false;
-            String url = span.getURL();
-            if (url == null) return false;
-            String u = url.toLowerCase(Locale.US);
-            if (!(u.contains("imgur.com/a/") || u.contains("imgur.com/gallery/"))) {
-                return false;
-            }
-            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            view.getContext().startActivity(intent);
-            return true;
-        } catch (Throwable t) {
-            return false;
+    private static List<String> imgurAlbumImages(String url) {
+        if (url == null) return null;
+        Matcher m = IMGUR_ALBUM.matcher(url);
+        if (!m.matches()) return null;
+        List<String> cached = ALBUMS.get(url);
+        if (cached != null) return cached.isEmpty() ? null : cached;
+
+        String id = m.group(2);
+        List<String> images = listImgurAlbum("https://api.imgur.com/3/album/" + id);
+        if (images == null && "gallery".equalsIgnoreCase(m.group(1))) {
+            images = listImgurAlbum("https://api.imgur.com/3/gallery/album/" + id);
         }
+        ALBUMS.put(url, images == null ? Collections.<String>emptyList() : images);
+        return images;
+    }
+
+    private static List<String> listImgurAlbum(String apiUrl) {
+        try {
+            String json = fetchText(apiUrl, IMGUR_AUTH, "application/json", MAX_JSON_BYTES);
+            if (json == null) return null;
+            JSONArray items = new JSONObject(json).getJSONObject("data").optJSONArray("images");
+            if (items == null || items.length() == 0) return null;
+            List<String> urls = new ArrayList<>(items.length());
+            for (int i = 0; i < items.length(); i++) {
+                JSONObject item = items.getJSONObject(i);
+                String id = item.optString("id", "");
+                String link = item.optString("link", "");
+                // Videos (mp4) can't be drawn in a span; imgur serves animated items as GIFs.
+                if (item.optString("type", "").startsWith("video/") && !id.isEmpty()) {
+                    link = "https://i.imgur.com/" + id + ".gif";
+                }
+                if (!link.isEmpty()) urls.add(link);
+            }
+            return urls.isEmpty() ? null : Collections.unmodifiableList(urls);
+        } catch (Throwable t) {
+            Log.w(TAG, "imgur album listing failed: " + apiUrl + " (" + t + ")");
+            return null;
+        }
+    }
+
+    /** Sets an album image span plus its tap handler over [start, end). */
+    private static void setAlbumSpan(SpannableStringBuilder body, AlbumImageSpan album, int start, int end) {
+        body.setSpan(album, start, end, Spanned.SPAN_INCLUSIVE_EXCLUSIVE);
+        setImageClickSpan(body, album, album.link, start, end);
+    }
+
+    /** Sets a tap handler for the inline [image] (which opens [link]) over [start, end). */
+    private static void setImageClickSpan(SpannableStringBuilder body, ImageSpan image, URLSpan link,
+                                          int start, int end) {
+        // Top priority so rif's movement method (which takes the first ClickableSpan under
+        // the tap) picks this over a link span covering the same text.
+        body.setSpan(new ImageClickSpan(image, link), start, end,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE | Spanned.SPAN_PRIORITY);
+    }
+
+    /**
+     * Where the last tap on [tv] fell across the image drawn by [span] (0 = left edge,
+     * 1 = right edge; [width] = its drawn width), or NaN if it wasn't on the image. rif's
+     * movement method maps a tap to the nearest character offset and fires any span touching
+     * it, so taps on text next to an image (e.g. the start of the following line) also land
+     * on its click span; those must be ignored.
+     */
+    private static float tapPosition(TextView tv, Object span, int width) {
+        float[] touch = LAST_TOUCH.get(tv);
+        Layout layout = tv.getLayout();
+        CharSequence text = tv.getText();
+        if (touch == null || layout == null || width <= 0 || !(text instanceof Spanned)) return Float.NaN;
+        int start = ((Spanned) text).getSpanStart(span);
+        if (start < 0) return Float.NaN;
+        int line = layout.getLineForOffset(start);
+        float y = touch[1] - tv.getTotalPaddingTop() + tv.getScrollY();
+        if (y < layout.getLineTop(line) || y > layout.getLineBottom(line)) return Float.NaN;
+        float left = layout.getPrimaryHorizontal(start) + tv.getTotalPaddingLeft() - tv.getScrollX();
+        float x = (touch[0] - left) / width;
+        return (x < 0f || x > 1f) ? Float.NaN : x;
+    }
+
+    /**
+     * Inline image for a multi-image album: a fixed-size box (sized from the first image,
+     * so cycling never re-flows the comment) showing the current image fitted inside,
+     * with ◀ ▶ buttons and an "n/x" badge. Extends ImageSpan so attach() animates GIFs.
+     * index/current/loading are touched on the main thread only.
+     */
+    private static final class AlbumImageSpan extends ImageSpan {
+        final List<String> urls;
+        final URLSpan link;
+        final boolean leading;
+        final int boxW;
+        final int boxH;
+        Drawable current;
+        int index;
+        boolean loading;
+
+        AlbumImageSpan(Drawable first, List<String> urls, URLSpan link, boolean leading) {
+            super(first, ImageSpan.ALIGN_BASELINE);
+            Rect b = first.getBounds();
+            this.boxW = Math.max(1, b.width());
+            this.boxH = Math.max(1, b.height());
+            this.urls = urls;
+            this.link = link;
+            this.leading = leading;
+            this.current = first;
+        }
+
+        @Override
+        public Drawable getDrawable() {
+            return current;
+        }
+
+        @Override
+        public int getSize(Paint paint, CharSequence text, int start, int end, Paint.FontMetricsInt fm) {
+            if (fm != null) {
+                // Same metrics as the single-image spans (incl. LeadingSpacedImageSpan's gap).
+                int pad = 0;
+                if (leading) {
+                    Paint.FontMetricsInt pfm = paint.getFontMetricsInt();
+                    pad = Math.round((pfm.descent - pfm.ascent) / 3f);
+                }
+                fm.ascent = -boxH - pad;
+                fm.top = fm.ascent;
+                fm.descent = 0;
+                fm.bottom = 0;
+            }
+            return boxW;
+        }
+
+        @Override
+        public void draw(Canvas canvas, CharSequence text, int start, int end, float x,
+                         int top, int y, int bottom, Paint paint) {
+            // Placement identical to DynamicDrawableSpan (ALIGN_BASELINE) for a box this size.
+            // Not using its cached drawable, since ours changes.
+            int transY = bottom - boxH - paint.getFontMetricsInt().descent;
+            canvas.save();
+            canvas.translate(x, transY);
+            current.draw(canvas);
+            drawControls(canvas);
+            canvas.restore();
+        }
+
+        private void drawControls(Canvas canvas) {
+            Resources res = Resources.getSystem();
+            float density = res.getDisplayMetrics().density;
+            float margin = 6 * density;
+
+            // "n/x" badge, top-right.
+            String label = (index + 1) + "/" + urls.size();
+            BADGE_TEXT.setTextSize(12 * density);
+            float textW = BADGE_TEXT.measureText(label);
+            float padX = 6 * density;
+            float badgeH = 20 * density;
+            RectF badge = new RectF(boxW - margin - textW - 2 * padX, margin, boxW - margin, margin + badgeH);
+            canvas.drawRoundRect(badge, badgeH / 2, badgeH / 2, SCRIM);
+            Paint.FontMetrics tfm = BADGE_TEXT.getFontMetrics();
+            canvas.drawText(label, badge.left + padX,
+                    badge.centerY() - (tfm.ascent + tfm.descent) / 2, BADGE_TEXT);
+
+            // ◀ ▶ buttons, vertically centered on the left/right edges (skipped if tiny, or
+            // if inline album navigation is turned off — the badge stays either way).
+            if (!Settings.inlineAlbumNavigation()) return;
+            float r = 16 * density;
+            if (boxW < 6 * r || boxH < 3 * r) return;
+            float cy = boxH / 2f;
+            drawArrow(canvas, margin + r, cy, r, -1);
+            drawArrow(canvas, boxW - margin - r, cy, r, +1);
+        }
+
+        private static void drawArrow(Canvas canvas, float cx, float cy, float r, int dir) {
+            canvas.drawCircle(cx, cy, r, SCRIM);
+            float s = r * 0.4f;
+            Path chevron = new Path();
+            chevron.moveTo(cx - dir * s * 0.5f, cy - s);
+            chevron.lineTo(cx + dir * s * 0.5f, cy);
+            chevron.lineTo(cx - dir * s * 0.5f, cy + s);
+            ARROW.setStrokeWidth(r * 0.18f);
+            canvas.drawPath(chevron, ARROW);
+        }
+
+        /** Shows the next (+1) / previous (-1) image, wrapping; loads it in the background. */
+        void step(TextView tv, int direction) {
+            if (loading) return;
+            int count = urls.size();
+            final int target = ((index + direction) % count + count) % count;
+            final String url = urls.get(target);
+            final WeakReference<TextView> view = new WeakReference<>(tv);
+            loading = true;
+            final String prefetchUrl = urls.get(((target + direction) % count + count) % count);
+            new Thread(() -> {
+                Drawable loaded = null;
+                try {
+                    byte[] data = fetch(url);
+                    if (data != null) loaded = toDrawable(data);
+                } catch (Throwable ignored) {
+                }
+                final Drawable result = loaded;
+                MAIN.post(() -> {
+                    loading = false;
+                    if (result == null) {
+                        Log.w(TAG, "album image failed to load: " + url);
+                        return;
+                    }
+                    fitIntoBox(result);
+                    current = result;
+                    index = target;
+                    TextView tvNow = view.get();
+                    CharSequence text = tvNow == null ? null : tvNow.getText();
+                    // Only touch the view if it still shows this span (rows get recycled);
+                    // otherwise the next bind picks the new image up via getDrawable().
+                    if (text instanceof Spannable && ((Spannable) text).getSpanStart(this) >= 0) {
+                        // rif's body text is selectable, so TextView draws it through cached
+                        // per-block display lists that a plain invalidate() reuses; our draw()
+                        // wouldn't run again. Re-setting the span is a span change, which makes
+                        // the TextView re-record that range with the new image.
+                        Spannable sp = (Spannable) text;
+                        sp.setSpan(this, sp.getSpanStart(this), sp.getSpanEnd(this), sp.getSpanFlags(this));
+                        attach(tvNow); // stops the old image's animation, starts a GIF's
+                        tvNow.invalidate();
+                    }
+                });
+                // After showing it: warm the byte cache for the next image in the same
+                // direction, so the following tap is near-instant.
+                try {
+                    fetch(prefetchUrl);
+                } catch (Throwable ignored) {
+                }
+            }, "RifAlbumImage").start();
+        }
+
+        /** Centers [d] in the box, scaled to fit (decoded bounds = its natural size). */
+        private void fitIntoBox(Drawable d) {
+            Rect b = d.getBounds();
+            int w = Math.max(1, b.width()), h = Math.max(1, b.height());
+            float scale = Math.min((float) boxW / w, (float) boxH / h);
+            int fw = Math.max(1, Math.round(w * scale)), fh = Math.max(1, Math.round(h * scale));
+            int left = (boxW - fw) / 2, top = (boxH - fh) / 2;
+            d.setBounds(left, top, left + fw, top + fh);
+        }
+    }
+
+    /**
+     * Tap handler over an inline image. A plain image opens its link (rif's usual popup /
+     * viewer) wherever it's tapped. An album image: left third = previous image, right
+     * third = next, middle = open the album via its link.
+     */
+    private static final class ImageClickSpan extends ClickableSpan {
+        private final ImageSpan image;
+        private final URLSpan link;
+
+        ImageClickSpan(ImageSpan image, URLSpan link) {
+            this.image = image;
+            this.link = link;
+        }
+
+        @Override
+        public void updateDrawState(TextPaint ds) {
+            // No link styling: the image itself is drawn by its ImageSpan.
+        }
+
+        private int width() {
+            if (image instanceof AlbumImageSpan) return ((AlbumImageSpan) image).boxW;
+            Drawable d = image.getDrawable();
+            return d == null ? 0 : d.getBounds().right;
+        }
+
+        @Override
+        public void onClick(View widget) {
+            try {
+                if (!(widget instanceof TextView)) return;
+                TextView tv = (TextView) widget;
+                // rif's body text is selectable, so its movement method highlighted this span's
+                // range on touch-down. rif's own links open a dialog that clears it; we don't,
+                // and a lingering selection makes the next tap only clear it. Clear it here.
+                CharSequence text = tv.getText();
+                if (text instanceof Spannable) Selection.removeSelection((Spannable) text);
+
+                float x = tapPosition(tv, image, width());
+                // Not on the image (a tap on nearby text that resolved to this span): do
+                // nothing, so the tap behaves like any other text tap (rif selects the comment).
+                if (Float.isNaN(x)) return;
+
+                // The body TextView is itself clickable (onClick="onListItemClick", which
+                // selects/highlights the comment and re-binds rows). That click was already
+                // queued for this tap; drop it so a tap on the image only does the image action.
+                tv.cancelPendingInputEvents();
+
+                // Album tap zones only with inline album navigation on; otherwise an album
+                // behaves like any other inline image.
+                boolean navigate = image instanceof AlbumImageSpan && Settings.inlineAlbumNavigation();
+                if (navigate && x < 0.33f) {
+                    ((AlbumImageSpan) image).step(tv, -1);
+                } else if (navigate && x > 0.67f) {
+                    ((AlbumImageSpan) image).step(tv, +1);
+                } else {
+                    link.onClick(tv); // open the image/album the usual way
+                }
+            } catch (Throwable t) {
+                Log.w(TAG, "image tap failed", t);
+            }
+        }
+    }
+
+    private static final Paint SCRIM = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private static final Paint ARROW = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private static final Paint BADGE_TEXT = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+    static {
+        SCRIM.setColor(0x99000000);
+        ARROW.setColor(0xFFFFFFFF);
+        ARROW.setStyle(Paint.Style.STROKE);
+        ARROW.setStrokeCap(Paint.Cap.ROUND);
+        ARROW.setStrokeJoin(Paint.Join.ROUND);
+        BADGE_TEXT.setColor(0xFFFFFFFF);
     }
 
     // ---- decoding --------------------------------------------------------------
@@ -460,6 +846,12 @@ public final class InlineImages {
     }
 
     private static String fetchText(String url) {
+        // og tags live in <head>, so a truncated page is fine.
+        return fetchText(url, null, "text/html,application/xhtml+xml", MAX_HTML_BYTES);
+    }
+
+    /** GETs a text resource (truncated at maxBytes); null on any non-200 or error. */
+    private static String fetchText(String url, String authorization, String accept, int maxBytes) {
         HttpURLConnection conn = null;
         try {
             conn = (HttpURLConnection) new URL(url).openConnection();
@@ -467,8 +859,13 @@ public final class InlineImages {
             conn.setReadTimeout(READ_TIMEOUT_MS);
             conn.setInstanceFollowRedirects(true);
             conn.setRequestProperty("User-Agent", USER_AGENT);
-            conn.setRequestProperty("Accept", "text/html,application/xhtml+xml");
-            if (conn.getResponseCode() != HttpURLConnection.HTTP_OK) return null;
+            conn.setRequestProperty("Accept", accept);
+            if (authorization != null) conn.setRequestProperty("Authorization", authorization);
+            int code = conn.getResponseCode();
+            if (code != HttpURLConnection.HTTP_OK) {
+                if (authorization != null) Log.w(TAG, "api HTTP " + code + ": " + url);
+                return null;
+            }
 
             InputStream in = conn.getInputStream();
             ByteArrayOutputStream out = new ByteArrayOutputStream(32 * 1024);
@@ -478,7 +875,7 @@ public final class InlineImages {
             while ((n = in.read(buf)) != -1) {
                 out.write(buf, 0, n);
                 total += n;
-                if (total > MAX_HTML_BYTES) break; // og tags live in <head>
+                if (total > maxBytes) break;
             }
             in.close();
             return new String(out.toByteArray(), "UTF-8");
@@ -502,7 +899,9 @@ public final class InlineImages {
         byte[] cached = BYTES.get(url);
         if (cached != null) return cached;
         byte[] data = download(url);
-        if (data != null) BYTES.put(url, data);
+        // Downloads may exceed the cache size (up to MAX_DOWNLOAD_BYTES); putting such an
+        // entry would evict everything else and then itself, so skip caching big ones.
+        if (data != null && data.length <= BYTES.maxSize() / 4) BYTES.put(url, data);
         return data;
     }
 
@@ -558,9 +957,12 @@ public final class InlineImages {
         return Math.round(value * res.getDisplayMetrics().density);
     }
 
-    private static boolean isBlank(CharSequence cs, int start, int end) {
-        for (int i = start; i < end; i++) {
-            if (!Character.isWhitespace(cs.charAt(i))) return false;
+    /** True if only whitespace separates [start] from the start of its line (or the text). */
+    private static boolean startsLine(CharSequence cs, int start) {
+        for (int i = start - 1; i >= 0; i--) {
+            char c = cs.charAt(i);
+            if (c == '\n') return true;
+            if (!Character.isWhitespace(c)) return false;
         }
         return true;
     }

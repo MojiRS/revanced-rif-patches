@@ -3,15 +3,19 @@ package app.revanced.patches.rif.ads
 import app.revanced.patcher.extensions.ExternalLabel
 import app.revanced.patcher.extensions.InstructionExtensions.addInstructionsWithLabels
 import app.revanced.patcher.extensions.InstructionExtensions.getInstruction
+import app.revanced.patcher.extensions.InstructionExtensions.instructions
 import app.revanced.patcher.fingerprint
 import app.revanced.patcher.patch.bytecodePatch
 import app.revanced.patcher.patch.resourcePatch
-import app.revanced.patches.rif.settings.RIF_PACKAGE
 import app.revanced.patches.rif.settings.addRevancedPreferenceCategory
 import app.revanced.patches.rif.settings.checkBoxPreference
 import app.revanced.patches.rif.settings.revancedSettingsPatch
 import app.revanced.patches.rif.settings.revancedSettingsResourcePatch
+import app.revanced.patches.rif.shared.RIF_PACKAGE
+import app.revanced.patches.rif.shared.requireScratchRegister
+import com.android.tools.smali.dexlib2.iface.instruction.ReferenceInstruction
 
+// Free build only: rif is fun golden platinum ships without the ad SDK or ad code.
 private const val ADS_PACKAGE = "Lcom/andrewshu/android/reddit/ads/"
 private const val SETTINGS = "Lapp/revanced/extension/rif/Settings;"
 
@@ -48,6 +52,23 @@ internal val feedAdSlotGateFingerprint = fingerprint {
     }
 }
 
+// The album viewer fragment's adapter factory (e2.b.L6): wraps the image list in
+// RifAppLovinImageAlbumRecyclerAdapter, whose own ad placer loads ads as it binds, so
+// no-op'ing initLoadAdsIfNeeded alone doesn't stop album-viewer ads. Matched as the
+// only method that calls IImageAlbumAdViewHelper.newRecyclerAdapter.
+internal val albumAdAdapterFactoryFingerprint = fingerprint {
+    custom { method, _ ->
+        method.parameterTypes.size == 1 &&
+            method.returnType == "Landroidx/recyclerview/widget/RecyclerView\$h;" &&
+            method.implementation?.instructions?.any { insn ->
+                insn is ReferenceInstruction &&
+                    insn.reference.toString().startsWith(
+                        "${ADS_PACKAGE}IImageAlbumAdViewHelper;->newRecyclerAdapter(",
+                    )
+            } == true
+    }
+}
+
 // Adds the "Disable ads" category (Block ads checkbox) to the ReVanced screen.
 val disableAdsSettingsResourcePatch = resourcePatch(
     description = "Adds the Disable ads settings.",
@@ -73,9 +94,8 @@ val disableAdsPatch = bytecodePatch(
 
     execute {
         // Each gate runs its original logic unless "Block ads" is enabled, in which
-        // case it short-circuits (no ad shown / no ad request). v0 is a free local
-        // at method entry for all of these (they all declare locals / take no params
-        // that occupy v0).
+        // case it short-circuits (no ad shown / no ad request). v0 is used as scratch,
+        // so each method must have a free local (checked, not assumed).
         val booleanGates = listOf(
             feedAdSlotGateFingerprint,
             adViewHelperGateFingerprint,
@@ -83,6 +103,7 @@ val disableAdsPatch = bytecodePatch(
         )
         for (fingerprint in booleanGates) {
             val method = fingerprint.method
+            requireScratchRegister(method)
             method.addInstructionsWithLabels(
                 0,
                 """
@@ -96,6 +117,22 @@ val disableAdsPatch = bytecodePatch(
             )
         }
 
+        // Album viewer: hand back the plain image adapter so the ad-inserting wrapper is
+        // never created (rif's own no-ads path; the helper's other callbacks all check
+        // `instanceof` the ad adapter first). p1 = the adapter to wrap.
+        val albumAdapterFactory = albumAdAdapterFactoryFingerprint.method
+        requireScratchRegister(albumAdapterFactory)
+        albumAdapterFactory.addInstructionsWithLabels(
+            0,
+            """
+                invoke-static {}, $SETTINGS->blockAds()Z
+                move-result v0
+                if-eqz v0, :original
+                return-object p1
+            """,
+            ExternalLabel("original", albumAdapterFactory.getInstruction(0)),
+        )
+
         val voidLoaders = listOf(
             nativeAdLoaderFingerprint,
             bannerLoadFingerprint,
@@ -103,6 +140,7 @@ val disableAdsPatch = bytecodePatch(
         )
         for (fingerprint in voidLoaders) {
             val method = fingerprint.method
+            requireScratchRegister(method)
             method.addInstructionsWithLabels(
                 0,
                 """

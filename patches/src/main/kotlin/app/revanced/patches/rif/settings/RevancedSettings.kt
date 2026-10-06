@@ -5,10 +5,10 @@ import app.revanced.patcher.fingerprint
 import app.revanced.patcher.patch.ResourcePatchContext
 import app.revanced.patcher.patch.bytecodePatch
 import app.revanced.patcher.patch.resourcePatch
+import app.revanced.patches.rif.shared.RIF_PACKAGES
 import org.w3c.dom.Document
 import org.w3c.dom.Element
 
-internal const val RIF_PACKAGE = "com.andrewshu.android.reddit"
 private const val REVANCED_PREFS = "res/xml/revanced_preferences.xml"
 
 /**
@@ -22,7 +22,7 @@ private const val REVANCED_PREFS = "res/xml/revanced_preferences.xml"
 val revancedSettingsResourcePatch = resourcePatch(
     description = "Adds a ReVanced settings screen to rif's settings.",
 ) {
-    compatibleWith(RIF_PACKAGE)
+    compatibleWith(*RIF_PACKAGES)
 
     execute {
         // Create the (initially empty) ReVanced preference screen.
@@ -61,7 +61,7 @@ private val rifApplicationOnCreateFingerprint = fingerprint {
 val revancedSettingsPatch = bytecodePatch(
     description = "Initializes the ReVanced settings framework.",
 ) {
-    compatibleWith(RIF_PACKAGE)
+    compatibleWith(*RIF_PACKAGES)
     dependsOn(revancedSettingsResourcePatch)
     extendWith("extensions/extension.rve")
 
@@ -90,14 +90,19 @@ internal fun ResourcePatchContext.addRevancedPreferenceCategory(
     }
 }
 
-/** Builds a default-on `<CheckBoxPreference>`, optionally greyed out via [dependency]. */
+/**
+ * Builds a default-on `<CheckBoxPreference>`, optionally with a [summary] line and greyed
+ * out via [dependency].
+ */
 internal fun Document.checkBoxPreference(
     key: String,
     title: String,
     dependency: String? = null,
+    summary: String? = null,
 ): Element = createElement("CheckBoxPreference").apply {
     setAttribute("android:key", key)
     setAttribute("app:title", title)
+    if (summary != null) setAttribute("app:summary", summary)
     setAttribute("android:defaultValue", "true")
     if (dependency != null) setAttribute("android:dependency", dependency)
 }

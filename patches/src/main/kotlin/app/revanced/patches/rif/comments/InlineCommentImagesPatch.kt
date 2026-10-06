@@ -1,19 +1,17 @@
 package app.revanced.patches.rif.comments
 
-import app.revanced.patcher.extensions.ExternalLabel
 import app.revanced.patcher.extensions.InstructionExtensions.addInstructions
-import app.revanced.patcher.extensions.InstructionExtensions.addInstructionsWithLabels
-import app.revanced.patcher.extensions.InstructionExtensions.getInstruction
 import app.revanced.patcher.extensions.InstructionExtensions.instructions
 import app.revanced.patcher.fingerprint
 import app.revanced.patcher.patch.bytecodePatch
 import app.revanced.patcher.patch.PatchException
 import app.revanced.patcher.patch.resourcePatch
-import app.revanced.patches.rif.settings.RIF_PACKAGE
 import app.revanced.patches.rif.settings.addRevancedPreferenceCategory
 import app.revanced.patches.rif.settings.checkBoxPreference
 import app.revanced.patches.rif.settings.revancedSettingsPatch
 import app.revanced.patches.rif.settings.revancedSettingsResourcePatch
+import app.revanced.patches.rif.shared.RIF_BUILDS
+import app.revanced.patches.rif.shared.RIF_PACKAGES
 import com.android.tools.smali.dexlib2.Opcode
 import com.android.tools.smali.dexlib2.iface.instruction.FiveRegisterInstruction
 import com.android.tools.smali.dexlib2.iface.instruction.ReferenceInstruction
@@ -25,7 +23,7 @@ private const val EXTENSION = "Lapp/revanced/extension/rif/InlineImages;"
 val inlineImagesSettingsResourcePatch = resourcePatch(
     description = "Adds the Inline comment images settings.",
 ) {
-    compatibleWith(RIF_PACKAGE)
+    compatibleWith(*RIF_PACKAGES)
     dependsOn(revancedSettingsResourcePatch)
 
     execute {
@@ -38,71 +36,72 @@ val inlineImagesSettingsResourcePatch = resourcePatch(
                     dependency = "INLINE_IMAGES",
                 ),
             )
+            category.appendChild(
+                doc.checkBoxPreference(
+                    "INLINE_ALBUM_NAVIGATION",
+                    "Inline album navigation",
+                    dependency = "INLINE_IMAGES",
+                    summary = "Arrows on multi-image imgur albums: tap the left/right side to " +
+                        "cycle images. When off, tapping an album opens it.",
+                ),
+            )
         }
     }
 }
 
-// CommentThing.e(SpannableStringBuilder) is rif's i0 render callback: it receives
-// the fully-rendered comment body (link spans already applied) on a background
-// thread and caches it for display. Injecting at its entry lets our extension
-// embed images into the spannable before it is ever measured/shown.
-internal val commentRenderedBodyFingerprint = fingerprint {
+private const val COMMENT_THING = "Lcom/andrewshu/android/reddit/things/objects/CommentThing;"
+private const val THREAD_THING = "Lcom/andrewshu/android/reddit/things/objects/ThreadThing;"
+
+// The i0.b render callback ((SpannableStringBuilder)V; named per build, see RIF_BUILDS):
+// it receives the fully-rendered body (link spans already applied) on a background
+// thread and caches it for display. Injecting at its entry lets our extension embed
+// images into the spannable before it is ever measured/shown.
+private fun renderCallbackFingerprint(thingType: String) = fingerprint {
     custom { method, classDef ->
-        classDef.type == "Lcom/andrewshu/android/reddit/things/objects/CommentThing;" &&
-            method.name == "e" &&
+        classDef.type == thingType &&
+            RIF_BUILDS.any { it.renderCallback == method.name } &&
             method.returnType == "V" &&
             method.parameterTypes.size == 1 &&
             method.parameterTypes.first().toString() == "Landroid/text/SpannableStringBuilder;"
     }
 }
 
-// n2.o.h(m, CommentThing, Fragment) is the comment ViewHolder body bind. Right
-// after `bodyTextView.setText(body)` we attach() so any animated (GIF) drawable
-// in the spannable gets its callback wired to that TextView and is started; this
-// is the main thread, so animation can run. h() has exactly one setText.
+// Comment body (CommentThing render callback).
+internal val commentRenderedBodyFingerprint = renderCallbackFingerprint(COMMENT_THING)
+
+// A text post's selftext body (ThreadThing render callback, same shape).
+internal val threadSelftextEmbedFingerprint = renderCallbackFingerprint(THREAD_THING)
+
+// <commentBindClass>.h(m, CommentThing, Fragment) is the comment ViewHolder body bind
+// (n2.o free / o2.o Platinum). Right after `bodyTextView.setText(body)` we attach() so
+// any animated (GIF) drawable in the spannable gets its callback wired to that TextView
+// and is started; this is the main thread, so animation can run. h() has one setText.
 internal val commentBodyBindFingerprint = fingerprint {
     custom { method, classDef ->
-        classDef.type == "Ln2/o;" &&
+        RIF_BUILDS.any { it.commentBindClass == classDef.type } &&
             method.name == "h" &&
             method.parameterTypes.size == 3 &&
-            method.parameterTypes[1].toString() ==
-                "Lcom/andrewshu/android/reddit/things/objects/CommentThing;"
+            method.parameterTypes[1].toString() == COMMENT_THING
     }
 }
 
-// ThreadThing.e(SpannableStringBuilder) is the i0 render callback for a text post's
-// selftext body — same shape as CommentThing.e. Embed images here too.
-internal val threadSelftextEmbedFingerprint = fingerprint {
-    custom { method, classDef ->
-        classDef.type == "Lcom/andrewshu/android/reddit/things/objects/ThreadThing;" &&
-            method.name == "e" &&
-            method.returnType == "V" &&
-            method.parameterTypes.size == 1 &&
-            method.parameterTypes.first().toString() == "Landroid/text/SpannableStringBuilder;"
-    }
-}
-
-// e5.g binds the post header; its selftext-bind method (the one reading
-// ThreadThing.C0()) sets the selftext on a TextView. We attach() after that
-// setText so selftext GIFs animate, mirroring the comment bind.
+// The post-header binder (e5.g free / f5.g Platinum): its selftext-bind method
+// p(binder, ThreadThing, r0) reads the selftext getter and sets it on a TextView with
+// its only setText. We attach() after that setText so selftext GIFs animate, mirroring
+// the comment bind. Class and getter are matched as a pair so one build's names can't
+// match in the other; the 3-arg signature excludes Platinum's f5.g.r(…, boolean), which
+// also reads the getter.
 internal val selftextBindFingerprint = fingerprint {
     custom { method, classDef ->
-        classDef.type == "Le5/g;" &&
-            method.implementation?.instructions?.any { insn ->
-                insn is ReferenceInstruction &&
-                    insn.reference.toString() ==
-                    "Lcom/andrewshu/android/reddit/things/objects/ThreadThing;->C0()Ljava/lang/CharSequence;"
-            } == true
-    }
-}
-
-// RedditBodyLinkSpan.onClick(View) opens a tapped comment link (and is what fires
-// when the inline album cover is tapped). rif's internal imgur album/gallery viewer
-// crashes, so we intercept those links and open them in a browser instead.
-internal val redditBodyLinkClickFingerprint = fingerprint {
-    custom { method, classDef ->
-        classDef.type == "Lcom/andrewshu/android/reddit/comments/spans/RedditBodyLinkSpan;" &&
-            method.name == "onClick"
+        val build = RIF_BUILDS.firstOrNull { it.selftextBindClass == classDef.type }
+            ?: return@custom false
+        if (method.parameterTypes.size != 3 || method.parameterTypes[1].toString() != THREAD_THING) {
+            return@custom false
+        }
+        val getter = "$THREAD_THING->${build.selftextGetter}()Ljava/lang/CharSequence;"
+        method.implementation?.instructions?.any { insn ->
+            insn is ReferenceInstruction && insn.reference.toString() == getter
+        } == true
     }
 }
 
@@ -111,7 +110,7 @@ val inlineCommentImagesPatch = bytecodePatch(
     name = "Inline comment images",
     description = "Renders image links in comment and text-post bodies as embedded inline images (static + animated GIFs, common hosts).",
 ) {
-    compatibleWith(RIF_PACKAGE)
+    compatibleWith(*RIF_PACKAGES)
     dependsOn(inlineImagesSettingsResourcePatch, revancedSettingsPatch)
 
     // Bring our extension (InlineImages) into the app.
@@ -147,19 +146,5 @@ val inlineCommentImagesPatch = bytecodePatch(
             )
         }
 
-        // 3) Intercept imgur album/gallery link clicks and open them in a browser
-        // (rif's internal viewer crashes on them). p0 = the span (a URLSpan),
-        // p1 = the clicked View.
-        val onClick = redditBodyLinkClickFingerprint.method
-        onClick.addInstructionsWithLabels(
-            0,
-            """
-                invoke-static { p0, p1 }, $EXTENSION->handleAlbumLink(Landroid/text/style/URLSpan;Landroid/view/View;)Z
-                move-result v0
-                if-eqz v0, :original
-                return-void
-            """,
-            ExternalLabel("original", onClick.getInstruction(0)),
-        )
     }
 }

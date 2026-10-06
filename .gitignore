@@ -107,6 +107,9 @@ gradle-app.setting
 # Avoid ignoring Gradle wrapper jar file (.jar files are usually ignored)
 !gradle-wrapper.jar
 
+# Compile-only stub of rif classes (source in extensions/extension/stubs/); required to build
+!extensions/extension/libs/rif-stubs.jar
+
 # Cache of project
 .gradletasknamecache
 

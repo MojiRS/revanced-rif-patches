@@ -6,16 +6,17 @@ import android.content.SharedPreferences;
 /**
  * Reads the ReVanced settings the patches expose in rif's settings UI.
  *
- * The checkboxes live in a "ReVanced" preference screen and write booleans to
- * rif's default SharedPreferences ("<package>_preferences"). We read them here.
- * A Context is obtained via ActivityThread reflection so this works on any thread
- * (e.g. the comment-render worker) without a hooked Context.
+ * The checkboxes live in a "ReVanced" preference screen that inherits rif's base
+ * settings fragment, so they write booleans to rif's "settings" SharedPreferences
+ * file. The app Context comes from a hook in rif's Application.onCreate
+ * ({@link #init}); reads are safe from any thread (e.g. the comment-render worker).
  */
 public final class Settings {
 
     public static final String KEY_BLOCK_ADS = "BLOCK_ADS";
     public static final String KEY_INLINE_IMAGES = "INLINE_IMAGES";
     public static final String KEY_INLINE_IMAGES_SCALE = "INLINE_IMAGES_SCALE";
+    public static final String KEY_INLINE_ALBUM_NAVIGATION = "INLINE_ALBUM_NAVIGATION";
 
     private static SharedPreferences prefs;
     private static Context appContext;
@@ -37,15 +38,25 @@ public final class Settings {
         }
     }
 
+    /**
+     * The app Context captured by {@link #init}, falling back to (hidden-API)
+     * ActivityThread reflection if init() somehow hasn't run. May return null.
+     */
+    static Context context() {
+        Context ctx = appContext;
+        if (ctx != null) return ctx;
+        try {
+            return (Context) Class.forName("android.app.ActivityThread")
+                    .getMethod("currentApplication").invoke(null);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
     private static SharedPreferences prefs() {
         if (prefs == null) {
             try {
-                Context ctx = appContext;
-                if (ctx == null) {
-                    // Fallback if init() hasn't run yet.
-                    ctx = (Context) Class.forName("android.app.ActivityThread")
-                            .getMethod("currentApplication").invoke(null);
-                }
+                Context ctx = context();
                 if (ctx != null) {
                     // rif overrides the preference name to "settings" in its base
                     // settings fragment (RifBaseSettingsFragment.s4 ->
@@ -78,5 +89,9 @@ public final class Settings {
 
     public static boolean scaleInlineImages() {
         return get(KEY_INLINE_IMAGES_SCALE, true);
+    }
+
+    public static boolean inlineAlbumNavigation() {
+        return get(KEY_INLINE_ALBUM_NAVIGATION, true);
     }
 }
