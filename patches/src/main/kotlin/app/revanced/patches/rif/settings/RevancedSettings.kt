@@ -106,3 +106,28 @@ internal fun Document.checkBoxPreference(
     setAttribute("android:defaultValue", "true")
     if (dependency != null) setAttribute("android:dependency", dependency)
 }
+
+/**
+ * Builds an int setting shown as a slider with its value, moving in steps of [increment],
+ * optionally greyed out via [dependency]. Uses the extension's StepSeekBarPreference (a
+ * SeekBarPreference that snaps drags to its increment; needs the inline images patch's
+ * SeekBar hook, so only use it from patches that depend on that).
+ */
+internal fun Document.seekBarPreference(
+    key: String,
+    title: String,
+    min: Int,
+    max: Int,
+    increment: Int,
+    default: Int,
+    dependency: String? = null,
+): Element = createElement("app.revanced.extension.rif.StepSeekBarPreference").apply {
+    setAttribute("android:key", key)
+    setAttribute("app:title", title)
+    setAttribute("app:min", min.toString())
+    setAttribute("android:max", max.toString())
+    setAttribute("app:seekBarIncrement", increment.toString())
+    setAttribute("app:showSeekBarValue", "true")
+    setAttribute("android:defaultValue", default.toString())
+    if (dependency != null) setAttribute("android:dependency", dependency)
+}

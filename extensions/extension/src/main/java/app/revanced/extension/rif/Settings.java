@@ -17,6 +17,8 @@ public final class Settings {
     public static final String KEY_INLINE_IMAGES = "INLINE_IMAGES";
     public static final String KEY_INLINE_IMAGES_SCALE = "INLINE_IMAGES_SCALE";
     public static final String KEY_INLINE_ALBUM_NAVIGATION = "INLINE_ALBUM_NAVIGATION";
+    public static final String KEY_INLINE_IMAGES_LONG_PRESS_SELECT = "INLINE_IMAGES_LONG_PRESS_SELECT";
+    public static final String KEY_INLINE_IMAGES_LONG_PRESS_DELAY = "INLINE_IMAGES_LONG_PRESS_DELAY";
 
     private static SharedPreferences prefs;
     private static Context appContext;
@@ -93,5 +95,20 @@ public final class Settings {
 
     public static boolean inlineAlbumNavigation() {
         return get(KEY_INLINE_ALBUM_NAVIGATION, true);
+    }
+
+    public static boolean longPressImageSelectsComment() {
+        return get(KEY_INLINE_IMAGES_LONG_PRESS_SELECT, true);
+    }
+
+    /** Hold time (ms) for a long press on an inline image (a slider, 100-1000). */
+    public static int longPressImageDelayMs() {
+        try {
+            SharedPreferences p = prefs();
+            int ms = p == null ? 250 : p.getInt(KEY_INLINE_IMAGES_LONG_PRESS_DELAY, 250);
+            return Math.max(100, Math.min(1000, ms));
+        } catch (Throwable t) {
+            return 250;
+        }
     }
 }

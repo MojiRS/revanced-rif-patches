@@ -30,6 +30,8 @@ import android.util.LruCache;
 import android.util.Size;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewConfiguration;
+import android.view.ViewGroup;
 import android.widget.TextView;
 
 import org.json.JSONArray;
@@ -68,7 +70,10 @@ import java.util.regex.Pattern;
  * Multi-image imgur albums get an {@link AlbumImageSpan}: a fixed-size box showing one
  * image, with ◀ ▶ buttons and an "n/x" badge. Taps reach it through rif's own link
  * movement method (which dispatches any ClickableSpan); the tap position comes from a
- * passive touch recorder installed by attach().
+ * touch listener installed by attach().
+ *
+ * Images are decoded for the full comment width, but replies are indented (narrower), so
+ * attach() also shrinks each image to its TextView's actual text width once laid out.
  */
 public final class InlineImages {
 
@@ -118,18 +123,76 @@ public final class InlineImages {
     // Album link -> its image URLs (empty list = not listable; fall back to og:image).
     private static final LruCache<String, List<String>> ALBUMS = new LruCache<>(128);
 
-    // Last touch position per TextView (recorded by TOUCH_RECORDER), so an album span's
+    // Last touch position per TextView (recorded by TOUCH_LISTENER), so an album span's
     // onClick knows which part of the image was tapped. Values never reference keys.
     private static final WeakHashMap<View, float[]> LAST_TOUCH = new WeakHashMap<>();
-    // Passive: records the position and never consumes the event, so rif's own touch
-    // handling (its link movement method) runs exactly as before.
-    private static final View.OnTouchListener TOUCH_RECORDER = (v, event) -> {
-        int action = event.getActionMasked();
-        if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_UP) {
-            LAST_TOUCH.put(v, new float[]{event.getX(), event.getY()});
+    // A long press on an inline image selects the comment (the click a tap on its text
+    // performs: rif's onListItemClick). It's timed by our own timer (ImageLongPress), so its
+    // delay is configurable, rather than by the TextView's long click. Per TextView: the
+    // pending timer; whether it fired during the current touch; and whether the TextView's
+    // own long click fired (when our delay is the longer one).
+    private static final WeakHashMap<View, Runnable> PENDING_LONG_PRESS = new WeakHashMap<>();
+    private static final WeakHashMap<View, Boolean> LONG_PRESSED = new WeakHashMap<>();
+    private static final WeakHashMap<View, Boolean> VIEW_LONG_PRESSED = new WeakHashMap<>();
+    // Records the touch position and runs the long-press timer. Never consumes events, so
+    // rif's own touch handling (its link movement method) runs as before. One exception: the
+    // lift that ends a timed long press is turned into a cancel, since rif's movement method
+    // would otherwise treat it as a tap and open the image.
+    private static final View.OnTouchListener TOUCH_LISTENER = (v, event) -> {
+        switch (event.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN:
+                LONG_PRESSED.remove(v);
+                VIEW_LONG_PRESSED.remove(v);
+                LAST_TOUCH.put(v, new float[]{event.getX(), event.getY()});
+                cancelImageLongPress(v);
+                if (v instanceof TextView) ImageLongPress.start((TextView) v);
+                break;
+            case MotionEvent.ACTION_MOVE:
+                float[] down = LAST_TOUCH.get(v);
+                int slop = ViewConfiguration.get(v.getContext()).getScaledTouchSlop();
+                if (down == null || Math.abs(event.getX() - down[0]) > slop
+                        || Math.abs(event.getY() - down[1]) > slop) {
+                    cancelImageLongPress(v);
+                }
+                break;
+            case MotionEvent.ACTION_UP:
+                cancelImageLongPress(v);
+                LAST_TOUCH.put(v, new float[]{event.getX(), event.getY()});
+                if (LONG_PRESSED.remove(v) != null) event.setAction(MotionEvent.ACTION_CANCEL);
+                break;
+            case MotionEvent.ACTION_CANCEL:
+            case MotionEvent.ACTION_POINTER_DOWN:
+                cancelImageLongPress(v);
+                break;
         }
         return false;
     };
+    // The TextView's own long click, on an image: consumed, so it doesn't start text
+    // selection (the comment is selected by our timer instead). TextView then discards the
+    // touch's lift itself. Elsewhere in the text, the long press behaves as usual.
+    private static final View.OnLongClickListener LONG_CLICK = v -> {
+        try {
+            if (!Settings.longPressImageSelectsComment() || !(v instanceof TextView)) return false;
+            TextView tv = (TextView) v;
+            if (!tv.isClickable() || !onImage(tv)) return false;
+            VIEW_LONG_PRESSED.put(tv, Boolean.TRUE);
+            // If our timer already fired, leave the lift to TextView (which now discards it):
+            // cancelling it too would leave TextView waiting to discard the next tap's lift.
+            LONG_PRESSED.remove(tv);
+            clearSelection(tv);
+            return true;
+        } catch (Throwable t) {
+            Log.w(TAG, "image long press failed", t);
+            return false;
+        }
+    };
+    // Re-fits images after each layout of the TextView, as the space it gets can change
+    // (e.g. a recycled row bound to a reply at a different depth). fitImages() is a no-op
+    // when nothing changed. Posted: the re-layout it may cause can't run mid-layout.
+    private static final View.OnLayoutChangeListener FITTER =
+            (v, l, t, r, b, oldL, oldT, oldR, oldB) -> {
+                if (v instanceof TextView) v.post(() -> fitImages((TextView) v));
+            };
 
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static final int CONNECT_TIMEOUT_MS = 10_000;
@@ -199,7 +262,7 @@ public final class InlineImages {
                         } else {
                             body.setSpan(
                                     leading ? new LeadingSpacedImageSpan(drawable)
-                                            : new ImageSpan(drawable, ImageSpan.ALIGN_BASELINE),
+                                            : new FitImageSpan(drawable),
                                     start, end, Spanned.SPAN_INCLUSIVE_EXCLUSIVE);
                         }
                     } else {
@@ -246,10 +309,16 @@ public final class InlineImages {
             List<Animatable> current = new ArrayList<>();
             if (cs instanceof Spanned) {
                 Spanned sp = (Spanned) cs;
-                // Image tap handlers need the tap position (rif's body TextViews have no
-                // touch listener of their own; this one never consumes events).
-                if (sp.getSpans(0, sp.length(), ImageClickSpan.class).length > 0) {
-                    tv.setOnTouchListener(TOUCH_RECORDER);
+                if (sp.getSpans(0, sp.length(), FitImageSpan.class).length > 0) {
+                    // Image taps and long presses need the touch position (rif's body
+                    // TextViews have no touch or long-click listeners of their own).
+                    tv.setOnTouchListener(TOUCH_LISTENER);
+                    tv.setOnLongClickListener(LONG_CLICK);
+                    // Fit to the current width now (usually right, as rows are recycled
+                    // between comments), and again whenever the width changes.
+                    tv.removeOnLayoutChangeListener(FITTER);
+                    tv.addOnLayoutChangeListener(FITTER);
+                    fitImages(tv);
                 }
                 for (ImageSpan span : sp.getSpans(0, sp.length(), ImageSpan.class)) {
                     Drawable d = span.getDrawable();
@@ -396,31 +465,198 @@ public final class InlineImages {
         return (x < 0f || x > 1f) ? Float.NaN : x;
     }
 
+    private static void cancelImageLongPress(View v) {
+        Runnable pending = PENDING_LONG_PRESS.remove(v);
+        if (pending != null) v.removeCallbacks(pending);
+    }
+
+    /** rif's movement method highlights a link/image's text range on touch-down. */
+    private static void clearSelection(TextView tv) {
+        CharSequence text = tv.getText();
+        if (text instanceof Spannable) Selection.removeSelection((Spannable) text);
+    }
+
+    /** Timer for a long press on an inline image; holds its TextView weakly. */
+    private static final class ImageLongPress implements Runnable {
+        private final WeakReference<TextView> view;
+
+        private ImageLongPress(TextView tv) {
+            view = new WeakReference<>(tv);
+        }
+
+        /** Starts the timer if the touch that just went down on [tv] is on an image. */
+        static void start(TextView tv) {
+            try {
+                if (!Settings.longPressImageSelectsComment() || !tv.isClickable() || !onImage(tv)) return;
+                ImageLongPress timer = new ImageLongPress(tv);
+                PENDING_LONG_PRESS.put(tv, timer);
+                tv.postDelayed(timer, Settings.longPressImageDelayMs());
+            } catch (Throwable t) {
+                Log.w(TAG, "image long press failed", t);
+            }
+        }
+
+        @Override
+        public void run() {
+            try {
+                TextView tv = view.get();
+                if (tv == null || PENDING_LONG_PRESS.get(tv) != this) return;
+                PENDING_LONG_PRESS.remove(tv);
+                // Stop the TextView's own (pending) long click; if it already fired, the
+                // TextView discards the lift itself, so don't also cancel it.
+                tv.cancelLongPress();
+                if (VIEW_LONG_PRESSED.get(tv) == null) LONG_PRESSED.put(tv, Boolean.TRUE);
+                clearSelection(tv);
+                tv.performClick();
+            } catch (Throwable t) {
+                Log.w(TAG, "image long press failed", t);
+            }
+        }
+    }
+
+    /** True if the last touch on [tv] landed on one of its inline images. */
+    private static boolean onImage(TextView tv) {
+        CharSequence text = tv.getText();
+        if (!(text instanceof Spanned)) return false;
+        for (FitImageSpan span : ((Spanned) text).getSpans(0, text.length(), FitImageSpan.class)) {
+            if (!Float.isNaN(tapPosition(tv, span, span.width()))) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Shrinks [tv]'s inline images to fit its text width (or grows them back toward their
+     * decoded size, if it got wider), re-laying out the text if any changed.
+     */
+    private static void fitImages(TextView tv) {
+        try {
+            int avail = availableTextWidth(tv);
+            CharSequence text = tv.getText();
+            if (avail <= 0 || !(text instanceof Spannable)) return;
+            Spannable sp = (Spannable) text;
+            boolean changed = false;
+            for (FitImageSpan span : sp.getSpans(0, sp.length(), FitImageSpan.class)) {
+                if (!span.fitWidth(avail)) continue;
+                changed = true;
+                // A span change makes the TextView re-flow (and re-draw) that range.
+                sp.setSpan(span, sp.getSpanStart(span), sp.getSpanEnd(span), sp.getSpanFlags(span));
+            }
+            if (changed) {
+                tv.requestLayout();
+                tv.invalidate();
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "image fit failed", t);
+        }
+    }
+
+    /**
+     * The widest [tv]'s text can be laid out. rif's comment body is wrap_content (inside a
+     * wrap_content frame), so its own width just follows its content; the limit comes from
+     * the nearest ancestor with a fixed or match_parent width, minus the paddings and
+     * margins in between. 0 if not laid out yet.
+     */
+    private static int availableTextWidth(TextView tv) {
+        int insets = tv.getTotalPaddingLeft() + tv.getTotalPaddingRight();
+        View v = tv;
+        while (v.getLayoutParams() != null
+                && v.getLayoutParams().width == ViewGroup.LayoutParams.WRAP_CONTENT
+                && v.getParent() instanceof ViewGroup) {
+            ViewGroup.LayoutParams lp = v.getLayoutParams();
+            if (lp instanceof ViewGroup.MarginLayoutParams) {
+                ViewGroup.MarginLayoutParams mlp = (ViewGroup.MarginLayoutParams) lp;
+                insets += mlp.leftMargin + mlp.rightMargin;
+            }
+            ViewGroup parent = (ViewGroup) v.getParent();
+            insets += parent.getPaddingLeft() + parent.getPaddingRight();
+            v = parent;
+        }
+        return v.getWidth() <= 0 ? 0 : v.getWidth() - insets;
+    }
+
+    /**
+     * Inline image that can shrink to fit its comment's width: images are decoded for a
+     * top-level comment, but replies are indented. Starts at its drawable's decoded size.
+     */
+    private static class FitImageSpan extends ImageSpan {
+        final int natW;
+        final int natH;
+
+        FitImageSpan(Drawable d) {
+            super(d, ImageSpan.ALIGN_BASELINE);
+            Rect b = d.getBounds();
+            natW = Math.max(1, b.width());
+            natH = Math.max(1, b.height());
+        }
+
+        /** Drawn width. */
+        int width() {
+            return getDrawable().getBounds().right;
+        }
+
+        /** Size for at most [maxW] wide, keeping the aspect ratio. */
+        final int[] fittedSize(int maxW) {
+            int w = Math.min(natW, maxW);
+            int h = w == natW ? natH : Math.max(1, Math.round(natH * (float) w / natW));
+            return new int[]{w, h};
+        }
+
+        /** Fits the image within [maxW]; true if its size changed. */
+        boolean fitWidth(int maxW) {
+            int[] size = fittedSize(maxW);
+            Drawable d = getDrawable();
+            Rect b = d.getBounds();
+            if (b.width() == size[0] && b.height() == size[1]) return false;
+            d.setBounds(0, 0, size[0], size[1]);
+            return true;
+        }
+    }
+
     /**
      * Inline image for a multi-image album: a fixed-size box (sized from the first image,
      * so cycling never re-flows the comment) showing the current image fitted inside,
      * with ◀ ▶ buttons and an "n/x" badge. Extends ImageSpan so attach() animates GIFs.
      * index/current/loading are touched on the main thread only.
      */
-    private static final class AlbumImageSpan extends ImageSpan {
+    private static final class AlbumImageSpan extends FitImageSpan {
         final List<String> urls;
         final URLSpan link;
         final boolean leading;
-        final int boxW;
-        final int boxH;
+        // The box: natW x natH (the first image's decoded size), shrunk by fitWidth().
+        int boxW;
+        int boxH;
         Drawable current;
+        // current's decoded (unfitted) size.
+        int currentW;
+        int currentH;
         int index;
         boolean loading;
 
         AlbumImageSpan(Drawable first, List<String> urls, URLSpan link, boolean leading) {
-            super(first, ImageSpan.ALIGN_BASELINE);
-            Rect b = first.getBounds();
-            this.boxW = Math.max(1, b.width());
-            this.boxH = Math.max(1, b.height());
+            super(first);
+            this.boxW = natW;
+            this.boxH = natH;
+            this.currentW = natW;
+            this.currentH = natH;
             this.urls = urls;
             this.link = link;
             this.leading = leading;
             this.current = first;
+        }
+
+        @Override
+        int width() {
+            return boxW;
+        }
+
+        @Override
+        boolean fitWidth(int maxW) {
+            int[] size = fittedSize(maxW);
+            if (boxW == size[0] && boxH == size[1]) return false;
+            boxW = size[0];
+            boxH = size[1];
+            fitIntoBox(current, currentW, currentH);
+            return true;
         }
 
         @Override
@@ -519,7 +755,10 @@ public final class InlineImages {
                         Log.w(TAG, "album image failed to load: " + url);
                         return;
                     }
-                    fitIntoBox(result);
+                    Rect natural = result.getBounds();
+                    currentW = Math.max(1, natural.width());
+                    currentH = Math.max(1, natural.height());
+                    fitIntoBox(result, currentW, currentH);
                     current = result;
                     index = target;
                     TextView tvNow = view.get();
@@ -546,10 +785,8 @@ public final class InlineImages {
             }, "RifAlbumImage").start();
         }
 
-        /** Centers [d] in the box, scaled to fit (decoded bounds = its natural size). */
-        private void fitIntoBox(Drawable d) {
-            Rect b = d.getBounds();
-            int w = Math.max(1, b.width()), h = Math.max(1, b.height());
+        /** Centers [d] (decoded size w x h) in the box, scaled to fit. */
+        private void fitIntoBox(Drawable d, int w, int h) {
             float scale = Math.min((float) boxW / w, (float) boxH / h);
             int fw = Math.max(1, Math.round(w * scale)), fh = Math.max(1, Math.round(h * scale));
             int left = (boxW - fw) / 2, top = (boxH - fh) / 2;
@@ -577,7 +814,7 @@ public final class InlineImages {
         }
 
         private int width() {
-            if (image instanceof AlbumImageSpan) return ((AlbumImageSpan) image).boxW;
+            if (image instanceof FitImageSpan) return ((FitImageSpan) image).width();
             Drawable d = image.getDrawable();
             return d == null ? 0 : d.getBounds().right;
         }
@@ -983,9 +1220,9 @@ public final class InlineImages {
      * below the comment header instead of crowding it; the image itself stays
      * bottom-aligned (inherited draw), so the padding lands above it.
      */
-    private static final class LeadingSpacedImageSpan extends ImageSpan {
+    private static final class LeadingSpacedImageSpan extends FitImageSpan {
         LeadingSpacedImageSpan(Drawable d) {
-            super(d, ImageSpan.ALIGN_BASELINE);
+            super(d);
         }
 
         @Override

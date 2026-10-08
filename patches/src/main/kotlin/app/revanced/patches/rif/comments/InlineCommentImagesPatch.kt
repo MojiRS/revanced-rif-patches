@@ -8,18 +8,21 @@ import app.revanced.patcher.patch.PatchException
 import app.revanced.patcher.patch.resourcePatch
 import app.revanced.patches.rif.settings.addRevancedPreferenceCategory
 import app.revanced.patches.rif.settings.checkBoxPreference
+import app.revanced.patches.rif.settings.seekBarPreference
 import app.revanced.patches.rif.settings.revancedSettingsPatch
 import app.revanced.patches.rif.settings.revancedSettingsResourcePatch
 import app.revanced.patches.rif.shared.RIF_BUILDS
 import app.revanced.patches.rif.shared.RIF_PACKAGES
+import app.revanced.patches.rif.shared.requireScratchRegister
 import com.android.tools.smali.dexlib2.Opcode
 import com.android.tools.smali.dexlib2.iface.instruction.FiveRegisterInstruction
 import com.android.tools.smali.dexlib2.iface.instruction.ReferenceInstruction
 
 private const val EXTENSION = "Lapp/revanced/extension/rif/InlineImages;"
+private const val STEP_SEEK_BAR = "Lapp/revanced/extension/rif/StepSeekBarPreference;"
 
-// Adds the "Inline comment images" category (two checkboxes) to the ReVanced screen.
-// "Scale inline images to fit" is greyed out when "Inline images" is off.
+// Adds the "Inline comment images" category to the ReVanced screen. The other checkboxes
+// are greyed out when "Inline images" is off.
 val inlineImagesSettingsResourcePatch = resourcePatch(
     description = "Adds the Inline comment images settings.",
 ) {
@@ -41,8 +44,25 @@ val inlineImagesSettingsResourcePatch = resourcePatch(
                     "INLINE_ALBUM_NAVIGATION",
                     "Inline album navigation",
                     dependency = "INLINE_IMAGES",
-                    summary = "Arrows on multi-image imgur albums: tap the left/right side to " +
-                        "cycle images. When off, tapping an album opens it.",
+                    summary = "Arrows on multi-image imgur albums to cycle images.",
+                ),
+            )
+            category.appendChild(
+                doc.checkBoxPreference(
+                    "INLINE_IMAGES_LONG_PRESS_SELECT",
+                    "Long press image to select comment",
+                    dependency = "INLINE_IMAGES",
+                ),
+            )
+            category.appendChild(
+                doc.seekBarPreference(
+                    "INLINE_IMAGES_LONG_PRESS_DELAY",
+                    "Long press delay (ms)",
+                    min = 100,
+                    max = 1000,
+                    increment = 50,
+                    default = 250,
+                    dependency = "INLINE_IMAGES_LONG_PRESS_SELECT",
                 ),
             )
         }
@@ -105,6 +125,17 @@ internal val selftextBindFingerprint = fingerprint {
     }
 }
 
+// androidx SeekBarPreference's SeekBar listener (an inner class). Its seekBarIncrement
+// only sets the arrow-key step, so a drag moves in steps of 1; snapping here (for our
+// StepSeekBarPreference only) makes the long-press delay slider move in 50 ms steps.
+internal val seekBarProgressChangedFingerprint = fingerprint {
+    custom { method, classDef ->
+        classDef.type.startsWith("Landroidx/preference/SeekBarPreference$") &&
+            method.name == "onProgressChanged" &&
+            method.parameterTypes.map { it.toString() } == listOf("Landroid/widget/SeekBar;", "I", "Z")
+    }
+}
+
 @Suppress("unused")
 val inlineCommentImagesPatch = bytecodePatch(
     name = "Inline comment images",
@@ -146,5 +177,22 @@ val inlineCommentImagesPatch = bytecodePatch(
             )
         }
 
+        // 3) Snap our sliders' dragged values to their step (p1 = SeekBar, p2 = progress,
+        // p3 = fromUser). snap() only acts when the listener's preference (its outer-class
+        // field) is a StepSeekBarPreference. The listener reads both p2 and
+        // seekBar.getProgress(), so both get the snapped value. v0 is a scratch local.
+        val onProgressChanged = seekBarProgressChangedFingerprint.method
+        val outerField = seekBarProgressChangedFingerprint.classDef.fields.singleOrNull {
+            it.type == "Landroidx/preference/SeekBarPreference;"
+        } ?: throw PatchException("SeekBarPreference field not found in ${onProgressChanged.definingClass}")
+        requireScratchRegister(onProgressChanged)
+        onProgressChanged.addInstructions(
+            0,
+            """
+                iget-object v0, p0, $outerField
+                invoke-static { v0, p1, p2, p3 }, $STEP_SEEK_BAR->snap(Ljava/lang/Object;Landroid/widget/SeekBar;IZ)I
+                move-result p2
+            """,
+        )
     }
 }

@@ -12,8 +12,11 @@ package com.andrewshu.android.reddit.settings;
  *   - E4()  free         (com.andrewshu.android.reddit)
  *   - t4()  Golden Platinum (com.andrewshu.android.redditdonation)
  *
- * Rebuild the jar after editing (from extensions/extension/, JDK 17):
- *   javac --release 17 -d stubs-out stubs/com/andrewshu/android/reddit/settings/RifBaseSettingsFragment.java
+ * The jar also holds the androidx SeekBarPreference stub (stubs/androidx/preference/).
+ * Rebuild it after editing either (from extensions/extension/, JDK 17):
+ *   javac --release 17 -cp "$ANDROID_HOME/platforms/android-34/android.jar" -d stubs-out \
+ *       stubs/com/andrewshu/android/reddit/settings/RifBaseSettingsFragment.java \
+ *       stubs/androidx/preference/SeekBarPreference.java
  *   jar cf libs/rif-stubs.jar -C stubs-out .
  */
 public abstract class RifBaseSettingsFragment {
