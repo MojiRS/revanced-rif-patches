@@ -16,12 +16,14 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.text.Editable;
 import android.text.Layout;
 import android.text.Selection;
 import android.text.Spannable;
 import android.text.SpannableStringBuilder;
 import android.text.Spanned;
 import android.text.TextPaint;
+import android.text.TextWatcher;
 import android.text.style.ClickableSpan;
 import android.text.style.ImageSpan;
 import android.text.style.URLSpan;
@@ -107,7 +109,7 @@ public final class InlineImages {
 
     private static final String TAG = "RifInlineImages";
     // Browser-like UA; some CDNs reject unusual agents. Used for images and pages.
-    private static final String USER_AGENT =
+    static final String USER_AGENT =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 rif-inline-images";
     private static final int MAX_DOWNLOAD_BYTES = 32 * 1024 * 1024;
     private static final int MAX_HTML_BYTES = 256 * 1024;
@@ -194,7 +196,7 @@ public final class InlineImages {
                 if (v instanceof TextView) v.post(() -> fitImages((TextView) v));
             };
 
-    private static final Handler MAIN = new Handler(Looper.getMainLooper());
+    static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static final int CONNECT_TIMEOUT_MS = 10_000;
     private static final int READ_TIMEOUT_MS = 30_000;
 
@@ -226,6 +228,8 @@ public final class InlineImages {
             for (URLSpan link : ordered) {
                 try {
                     String pageUrl = link.getURL();
+                    // Video links (comment videos, v.redd.it, imgur gifv/mp4) are InlineVideos'.
+                    if (InlineVideos.embed(body, link)) continue;
                     // imgur albums are listed via the API (so multi-image albums can be
                     // cycled inline). Direct image links are used as-is; other known media
                     // hosts (imgur pages, redgifs, reddit galleries, ...) are resolved to
@@ -292,9 +296,39 @@ public final class InlineImages {
 
     // ---- main thread: start/stop GIF animation for a bound TextView ------------
 
+    // TextViews with a RETEXT watcher (keys weak).
+    private static final WeakHashMap<TextView, Boolean> WATCHED = new WeakHashMap<>();
+
+    /**
+     * Re-runs attach() when rif sets a watched TextView's text outside the bind we hook
+     * (e.g. it re-sets a text post's body once its rendering, with our images, completes).
+     */
+    private static final class Retext implements TextWatcher {
+        private final WeakReference<TextView> view;
+
+        Retext(TextView tv) {
+            view = new WeakReference<>(tv);
+        }
+
+        @Override
+        public void beforeTextChanged(CharSequence s, int start, int count, int after) {
+        }
+
+        @Override
+        public void onTextChanged(CharSequence s, int start, int before, int count) {
+        }
+
+        @Override
+        public void afterTextChanged(Editable s) {
+            TextView tv = view.get();
+            if (tv != null) tv.post(() -> attach(tv));
+        }
+    }
+
     public static void attach(TextView tv) {
         try {
             if (tv == null) return;
+            if (WATCHED.put(tv, Boolean.TRUE) == null) tv.addTextChangedListener(new Retext(tv));
 
             Bound bound = RUNNING.get(tv);
             if (bound == null) bound = new Bound(tv);
@@ -352,6 +386,8 @@ public final class InlineImages {
             }
         } catch (Throwable ignored) {
         }
+        // Video overlays: added for this text's videos, removed for ones that left.
+        InlineVideos.attach(tv);
     }
 
     /** Drawable.Callback that invalidates a TextView it holds only weakly. */
@@ -435,7 +471,7 @@ public final class InlineImages {
     }
 
     /** Sets a tap handler for the inline [image] (which opens [link]) over [start, end). */
-    private static void setImageClickSpan(SpannableStringBuilder body, ImageSpan image, URLSpan link,
+    static void setImageClickSpan(SpannableStringBuilder body, ImageSpan image, URLSpan link,
                                           int start, int end) {
         // Top priority so rif's movement method (which takes the first ClickableSpan under
         // the tap) picks this over a link span covering the same text.
@@ -578,7 +614,7 @@ public final class InlineImages {
      * Inline image that can shrink to fit its comment's width: images are decoded for a
      * top-level comment, but replies are indented. Starts at its drawable's decoded size.
      */
-    private static class FitImageSpan extends ImageSpan {
+    static class FitImageSpan extends ImageSpan {
         final int natW;
         final int natH;
 
@@ -842,6 +878,12 @@ public final class InlineImages {
 
                 // Album tap zones only with inline album navigation on; otherwise an album
                 // behaves like any other inline image.
+                // A video that isn't autoplaying starts playing inline on its first tap.
+                if (image instanceof InlineVideos.VideoSpan
+                        && InlineVideos.onTap(tv, (InlineVideos.VideoSpan) image)) {
+                    return;
+                }
+
                 boolean navigate = image instanceof AlbumImageSpan && Settings.inlineAlbumNavigation();
                 if (navigate && x < 0.33f) {
                     ((AlbumImageSpan) image).step(tv, -1);
@@ -929,7 +971,7 @@ public final class InlineImages {
      * on, fill the comment width (up- or down-scaling). With it off, keep native
      * size, only downscaling images wider than the comment. Height is always capped.
      */
-    private static int[] outSize(int w, int h) {
+    static int[] outSize(int w, int h) {
         if (w <= 0 || h <= 0) return new int[]{Math.max(1, w), Math.max(1, h)};
         int targetW = targetWidth();
         int maxH = maxHeight();
@@ -1088,7 +1130,7 @@ public final class InlineImages {
     }
 
     /** GETs a text resource (truncated at maxBytes); null on any non-200 or error. */
-    private static String fetchText(String url, String authorization, String accept, int maxBytes) {
+    static String fetchText(String url, String authorization, String accept, int maxBytes) {
         HttpURLConnection conn = null;
         try {
             conn = (HttpURLConnection) new URL(url).openConnection();
@@ -1195,7 +1237,7 @@ public final class InlineImages {
     }
 
     /** True if only whitespace separates [start] from the start of its line (or the text). */
-    private static boolean startsLine(CharSequence cs, int start) {
+    static boolean startsLine(CharSequence cs, int start) {
         for (int i = start - 1; i >= 0; i--) {
             char c = cs.charAt(i);
             if (c == '\n') return true;
@@ -1209,7 +1251,7 @@ public final class InlineImages {
      * gif upload as a "[gif]" link). For these we hide the text and show the image
      * inline rather than keeping the marker visible.
      */
-    private static boolean isHideableLinkText(String text) {
+    static boolean isHideableLinkText(String text) {
         if (text == null) return false;
         return text.trim().equalsIgnoreCase("[gif]");
     }

@@ -12,7 +12,7 @@ import app.revanced.patches.rif.settings.seekBarPreference
 import app.revanced.patches.rif.settings.revancedSettingsPatch
 import app.revanced.patches.rif.settings.revancedSettingsResourcePatch
 import app.revanced.patches.rif.shared.RIF_BUILDS
-import app.revanced.patches.rif.shared.RIF_PACKAGES
+import app.revanced.patches.rif.shared.RIF_COMPATIBILITY
 import app.revanced.patches.rif.shared.requireScratchRegister
 import com.android.tools.smali.dexlib2.Opcode
 import com.android.tools.smali.dexlib2.iface.instruction.FiveRegisterInstruction
@@ -21,16 +21,16 @@ import com.android.tools.smali.dexlib2.iface.instruction.ReferenceInstruction
 private const val EXTENSION = "Lapp/revanced/extension/rif/InlineImages;"
 private const val STEP_SEEK_BAR = "Lapp/revanced/extension/rif/StepSeekBarPreference;"
 
-// Adds the "Inline comment images" category to the ReVanced screen. The other checkboxes
+// Adds the "Inline media" category to the ReVanced screen. The other checkboxes
 // are greyed out when "Inline images" is off.
 val inlineImagesSettingsResourcePatch = resourcePatch(
     description = "Adds the Inline comment images settings.",
 ) {
-    compatibleWith(*RIF_PACKAGES)
+    compatibleWith(*RIF_COMPATIBILITY)
     dependsOn(revancedSettingsResourcePatch)
 
     execute {
-        addRevancedPreferenceCategory("Inline comment images") { doc, category ->
+        addRevancedPreferenceCategory("Inline media") { doc, category ->
             category.appendChild(doc.checkBoxPreference("INLINE_IMAGES", "Inline images"))
             category.appendChild(
                 doc.checkBoxPreference(
@@ -45,6 +45,16 @@ val inlineImagesSettingsResourcePatch = resourcePatch(
                     "Inline album navigation",
                     dependency = "INLINE_IMAGES",
                     summary = "Arrows on multi-image imgur albums to cycle images.",
+                ),
+            )
+            category.appendChild(
+                doc.checkBoxPreference("INLINE_VIDEOS", "Inline videos", dependency = "INLINE_IMAGES"),
+            )
+            category.appendChild(
+                doc.checkBoxPreference(
+                    "INLINE_VIDEOS_AUTOPLAY",
+                    "Autoplay inline videos",
+                    dependency = "INLINE_VIDEOS",
                 ),
             )
             category.appendChild(
@@ -125,6 +135,22 @@ internal val selftextBindFingerprint = fingerprint {
     }
 }
 
+// The comments page's post binder (e5.u free / f5.u Platinum): o(holder, ThreadThing) sets
+// the post's selftext, above the comments, with `setText(thing.<selftextGetter>())` (or
+// the raw text when it isn't rendered yet). Matched with its getter as a pair, like above.
+internal val opSelftextBindFingerprint = fingerprint {
+    custom { method, classDef ->
+        val build = RIF_BUILDS.firstOrNull { it.opSelftextBindClass == classDef.type }
+            ?: return@custom false
+        method.name == "o" && method.parameterTypes.size == 2 &&
+            method.parameterTypes[1].toString() == THREAD_THING &&
+            method.implementation?.instructions?.any { insn ->
+                insn is ReferenceInstruction &&
+                    insn.reference.toString() == "$THREAD_THING->${build.selftextGetter}()Ljava/lang/CharSequence;"
+            } == true
+    }
+}
+
 // androidx SeekBarPreference's SeekBar listener (an inner class). Its seekBarIncrement
 // only sets the arrow-key step, so a drag moves in steps of 1; snapping here (for our
 // StepSeekBarPreference only) makes the long-press delay slider move in 50 ms steps.
@@ -139,9 +165,9 @@ internal val seekBarProgressChangedFingerprint = fingerprint {
 @Suppress("unused")
 val inlineCommentImagesPatch = bytecodePatch(
     name = "Inline comment images",
-    description = "Renders image links in comment and text-post bodies as embedded inline images (static + animated GIFs, common hosts).",
+    description = "Shows images, GIFs and videos linked in comments and text posts inline.",
 ) {
-    compatibleWith(*RIF_PACKAGES)
+    compatibleWith(*RIF_COMPATIBILITY)
     dependsOn(inlineImagesSettingsResourcePatch, revancedSettingsPatch)
 
     // Bring our extension (InlineImages) into the app.
@@ -157,12 +183,25 @@ val inlineCommentImagesPatch = bytecodePatch(
             )
         }
 
-        // 2) Start GIF animation once the body TextView is bound (main thread): inject
-        // attach(textView) right after the body setText, in both the comment ViewHolder
-        // bind (n2.o.h) and the selftext bind (e5.g). Each has one TextView.setText.
-        for (bind in listOf(commentBodyBindFingerprint.method, selftextBindFingerprint.method)) {
-            val setTextIndex = bind.instructions.indexOfFirst { insn ->
-                insn.opcode == Opcode.INVOKE_VIRTUAL &&
+        // 2) Start GIFs and videos once the body TextView is bound (main thread): inject
+        // attach(textView) right after the body setText, in the comment ViewHolder bind
+        // (n2.o.h), the thread-list selftext bind (e5.g) and the comments-page selftext
+        // bind (e5.u.o). The first two have one TextView.setText; in o() it's the first
+        // setText after the selftext getter.
+        val binds = listOf(
+            commentBodyBindFingerprint.method to null,
+            selftextBindFingerprint.method to null,
+            opSelftextBindFingerprint.method to RIF_BUILDS.first {
+                it.opSelftextBindClass == opSelftextBindFingerprint.classDef.type
+            }.selftextGetter,
+        )
+        for ((bind, getter) in binds) {
+            val from = if (getter == null) 0 else bind.instructions.indexOfFirst { insn ->
+                (insn as? ReferenceInstruction)?.reference?.toString() ==
+                    "$THREAD_THING->$getter()Ljava/lang/CharSequence;"
+            }
+            val setTextIndex = bind.instructions.withIndex().indexOfFirst { (i, insn) ->
+                i >= from && insn.opcode == Opcode.INVOKE_VIRTUAL &&
                     (insn as? ReferenceInstruction)?.reference?.toString() ==
                     "Landroid/widget/TextView;->setText(Ljava/lang/CharSequence;)V"
             }
@@ -177,7 +216,10 @@ val inlineCommentImagesPatch = bytecodePatch(
             )
         }
 
-        // 3) Snap our sliders' dragged values to their step (p1 = SeekBar, p2 = progress,
+        // 3) Full screen from an inline video continues where it was (FullscreenHandoff.kt).
+        hookFullscreenHandoff()
+
+        // 4) Snap our sliders' dragged values to their step (p1 = SeekBar, p2 = progress,
         // p3 = fromUser). snap() only acts when the listener's preference (its outer-class
         // field) is a StepSeekBarPreference. The listener reads both p2 and
         // seekBar.getProgress(), so both get the snapped value. v0 is a scratch local.

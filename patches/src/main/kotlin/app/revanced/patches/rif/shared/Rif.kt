@@ -20,6 +20,20 @@ internal const val RIF_PLATINUM_PACKAGE = "com.andrewshu.android.redditdonation"
 internal val RIF_PACKAGES = arrayOf(RIF_PACKAGE, RIF_PLATINUM_PACKAGE)
 
 /**
+ * The rif version the patches are built for: 5.6.22, its final release. The patches match
+ * its R8-obfuscated names, so they won't apply to other versions; declaring it lets
+ * managers recommend it and warn about others.
+ */
+internal const val RIF_VERSION = "5.6.22"
+
+/** [RIF_PACKAGE] at [RIF_VERSION], for compatibleWith(). */
+internal val RIF_FREE_COMPATIBILITY = RIF_PACKAGE to setOf(RIF_VERSION)
+
+/** [RIF_PACKAGES] at [RIF_VERSION], for compatibleWith(*...). */
+internal val RIF_COMPATIBILITY: Array<Pair<String, Set<String>>> =
+    RIF_PACKAGES.map { it to setOf(RIF_VERSION) }.toTypedArray()
+
+/**
  * Obfuscated names that differ between the free and Platinum builds of rif 5.6.22.
  * rif's own class names survive R8 in both, but members and the obfuscated helper
  * packages are renamed independently (see SYMBOL-MAP.md in the workspace).
@@ -31,15 +45,26 @@ internal class RifSymbols(
     val renderCallback: String,
     /** Comment ViewHolder whose `h(m, CommentThing, Fragment)` binds the body TextView. */
     val commentBindClass: String,
-    /** Post-header binder whose selftext method calls [selftextGetter] then setText. */
+    /** Thread-list binder whose selftext-preview method calls [selftextGetter] then setText. */
     val selftextBindClass: String,
     /** ThreadThing getter for the rendered selftext: `()CharSequence`. */
     val selftextGetter: String,
+    /**
+     * Comments-page binder whose `o(holder, ThreadThing)` sets the post's selftext (the
+     * body above the comments) via [selftextGetter].
+     */
+    val opSelftextBindClass: String,
 )
 
 internal val RIF_BUILDS = listOf(
-    RifSymbols(renderCallback = "e", commentBindClass = "Ln2/o;", selftextBindClass = "Le5/g;", selftextGetter = "C0"), // free
-    RifSymbols(renderCallback = "d", commentBindClass = "Lo2/o;", selftextBindClass = "Lf5/g;", selftextGetter = "F0"), // Platinum
+    RifSymbols( // free
+        renderCallback = "e", commentBindClass = "Ln2/o;", selftextBindClass = "Le5/g;",
+        selftextGetter = "C0", opSelftextBindClass = "Le5/u;",
+    ),
+    RifSymbols( // Platinum
+        renderCallback = "d", commentBindClass = "Lo2/o;", selftextBindClass = "Lf5/g;",
+        selftextGetter = "F0", opSelftextBindClass = "Lf5/u;",
+    ),
 )
 
 /**

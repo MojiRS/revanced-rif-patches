@@ -5,7 +5,7 @@ import app.revanced.patcher.fingerprint
 import app.revanced.patcher.patch.ResourcePatchContext
 import app.revanced.patcher.patch.bytecodePatch
 import app.revanced.patcher.patch.resourcePatch
-import app.revanced.patches.rif.shared.RIF_PACKAGES
+import app.revanced.patches.rif.shared.RIF_COMPATIBILITY
 import org.w3c.dom.Document
 import org.w3c.dom.Element
 
@@ -22,7 +22,7 @@ private const val REVANCED_PREFS = "res/xml/revanced_preferences.xml"
 val revancedSettingsResourcePatch = resourcePatch(
     description = "Adds a ReVanced settings screen to rif's settings.",
 ) {
-    compatibleWith(*RIF_PACKAGES)
+    compatibleWith(*RIF_COMPATIBILITY)
 
     execute {
         // Create the (initially empty) ReVanced preference screen.
@@ -61,7 +61,7 @@ private val rifApplicationOnCreateFingerprint = fingerprint {
 val revancedSettingsPatch = bytecodePatch(
     description = "Initializes the ReVanced settings framework.",
 ) {
-    compatibleWith(*RIF_PACKAGES)
+    compatibleWith(*RIF_COMPATIBILITY)
     dependsOn(revancedSettingsResourcePatch)
     extendWith("extensions/extension.rve")
 

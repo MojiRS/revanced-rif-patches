@@ -11,7 +11,7 @@ import app.revanced.patches.rif.settings.addRevancedPreferenceCategory
 import app.revanced.patches.rif.settings.checkBoxPreference
 import app.revanced.patches.rif.settings.revancedSettingsPatch
 import app.revanced.patches.rif.settings.revancedSettingsResourcePatch
-import app.revanced.patches.rif.shared.RIF_PACKAGE
+import app.revanced.patches.rif.shared.RIF_FREE_COMPATIBILITY
 import app.revanced.patches.rif.shared.requireScratchRegister
 import com.android.tools.smali.dexlib2.iface.instruction.ReferenceInstruction
 
@@ -73,7 +73,7 @@ internal val albumAdAdapterFactoryFingerprint = fingerprint {
 val disableAdsSettingsResourcePatch = resourcePatch(
     description = "Adds the Disable ads settings.",
 ) {
-    compatibleWith(RIF_PACKAGE)
+    compatibleWith(RIF_FREE_COMPATIBILITY)
     dependsOn(revancedSettingsResourcePatch)
 
     execute {
@@ -88,7 +88,7 @@ val disableAdsPatch = bytecodePatch(
     name = "Disable ads",
     description = "Removes AppLovin native feed ads, banner ads, and image-viewer ads from rif is fun.",
 ) {
-    compatibleWith(RIF_PACKAGE)
+    compatibleWith(RIF_FREE_COMPATIBILITY)
     dependsOn(disableAdsSettingsResourcePatch, revancedSettingsPatch)
     extendWith("extensions/extension.rve")
 

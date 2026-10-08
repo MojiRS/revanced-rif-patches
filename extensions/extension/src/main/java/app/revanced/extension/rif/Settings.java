@@ -19,6 +19,8 @@ public final class Settings {
     public static final String KEY_INLINE_ALBUM_NAVIGATION = "INLINE_ALBUM_NAVIGATION";
     public static final String KEY_INLINE_IMAGES_LONG_PRESS_SELECT = "INLINE_IMAGES_LONG_PRESS_SELECT";
     public static final String KEY_INLINE_IMAGES_LONG_PRESS_DELAY = "INLINE_IMAGES_LONG_PRESS_DELAY";
+    public static final String KEY_INLINE_VIDEOS = "INLINE_VIDEOS";
+    public static final String KEY_INLINE_VIDEOS_AUTOPLAY = "INLINE_VIDEOS_AUTOPLAY";
 
     private static SharedPreferences prefs;
     private static Context appContext;
@@ -95,6 +97,14 @@ public final class Settings {
 
     public static boolean inlineAlbumNavigation() {
         return get(KEY_INLINE_ALBUM_NAVIGATION, true);
+    }
+
+    public static boolean inlineVideos() {
+        return inlineImages() && get(KEY_INLINE_VIDEOS, true);
+    }
+
+    public static boolean autoplayInlineVideos() {
+        return get(KEY_INLINE_VIDEOS_AUTOPLAY, true);
     }
 
     public static boolean longPressImageSelectsComment() {

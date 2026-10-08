@@ -5,7 +5,7 @@ import app.revanced.patcher.extensions.InstructionExtensions.instructions
 import app.revanced.patcher.fingerprint
 import app.revanced.patcher.patch.PatchException
 import app.revanced.patcher.patch.bytecodePatch
-import app.revanced.patches.rif.shared.RIF_PACKAGES
+import app.revanced.patches.rif.shared.RIF_COMPATIBILITY
 import com.android.tools.smali.dexlib2.AccessFlags
 import com.android.tools.smali.dexlib2.Opcode
 import com.android.tools.smali.dexlib2.iface.instruction.ReferenceInstruction
@@ -37,7 +37,7 @@ val fixCommentVideoLinksPatch = bytecodePatch(
     description = "Makes videos posted in comments play in rif's video player instead of failing " +
         "with \"error retrieving Reddit video metadata\".",
 ) {
-    compatibleWith(*RIF_PACKAGES)
+    compatibleWith(*RIF_COMPATIBILITY)
     extendWith("extensions/extension.rve")
 
     execute {

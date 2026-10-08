@@ -6,7 +6,7 @@ import app.revanced.patcher.extensions.InstructionExtensions.replaceInstruction
 import app.revanced.patcher.patch.BytecodePatchContext
 import app.revanced.patcher.patch.PatchException
 import app.revanced.patcher.patch.bytecodePatch
-import app.revanced.patches.rif.shared.RIF_PACKAGES
+import app.revanced.patches.rif.shared.RIF_COMPATIBILITY
 import com.android.tools.smali.dexlib2.Opcode
 import com.android.tools.smali.dexlib2.iface.Method
 import com.android.tools.smali.dexlib2.iface.instruction.FiveRegisterInstruction
@@ -60,7 +60,7 @@ val fixImgurAlbumsPatch = bytecodePatch(
     description = "Fixes imgur albums crashing or failing to load when patched alongside the " +
         "official ReVanced rif patches. Does nothing without them.",
 ) {
-    compatibleWith(*RIF_PACKAGES)
+    compatibleWith(*RIF_COMPATIBILITY)
 
     // The code being fixed is injected by another bundle's patch, and patch order across
     // bundles isn't guaranteed. finalize runs after every patch's execute (in Manager and
