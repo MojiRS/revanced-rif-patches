@@ -50,3 +50,9 @@ rif resolves a `reddit.com/link/{id}/video/{mediaId}/player` link by looking `{i
 Fixes imgur albums crashing or failing to load when patched alongside the official ReVanced rif patches.
 
 The official patches move album loading from rif's defunct proxy to imgur's v3 API. This patch fixes the crash (or bounce back a page) caused by an invalid `String.concat` call in that code, and sends rif's imgur client ID with album requests, which the proxy used to add, so they aren't rejected as anonymous. Without the official patches, that code isn't present and this patch changes nothing.
+
+## Fix YouTube videos
+
+Fixes the built-in YouTube player.
+
+Without it, YouTube links opened in rif show a black player and "There was an error initializing the YouTubePlayer (Error code: 0)". rif's YouTube player library tells YouTube the embed comes from `https://www.youtube.com`. YouTube now rejects embeds unless that origin is `https://` plus the app's package name. This patch sends the app's own origin instead, the same fix as newer versions of the library.

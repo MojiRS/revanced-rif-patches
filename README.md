@@ -12,6 +12,7 @@ A bundle is a container for many small, independently-toggleable patches. Option
 | **Inline comment images** | Shows images, GIFs and videos linked in comments and text posts inline. |
 | **Fix comment video links** | Makes videos posted in comments play in rif's video player instead of failing with "error retrieving Reddit video metadata". |
 | **Fix imgur albums** | Fixes imgur albums crashing or failing to load when patched alongside the official ReVanced rif patches. |
+| **Fix YouTube videos** | Fixes the built-in YouTube player. |
 
 For how each patch works and its settings, see [PATCHES.md](PATCHES.md).
 
