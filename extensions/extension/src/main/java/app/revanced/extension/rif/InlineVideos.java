@@ -341,21 +341,6 @@ public final class InlineVideos {
         }
 
         @Override
-        public int getSize(Paint paint, CharSequence text, int start, int end, Paint.FontMetricsInt fm) {
-            Rect b = getDrawable().getBounds();
-            if (fm != null) {
-                // Own line below the link: same gap as LeadingSpacedImageSpan.
-                Paint.FontMetricsInt pfm = paint.getFontMetricsInt();
-                int pad = Math.round((pfm.descent - pfm.ascent) / 3f);
-                fm.ascent = -b.bottom - pad;
-                fm.top = fm.ascent;
-                fm.descent = 0;
-                fm.bottom = 0;
-            }
-            return b.right;
-        }
-
-        @Override
         public void draw(Canvas canvas, CharSequence text, int start, int end, float x,
                          int top, int y, int bottom, Paint paint) {
             Drawable d = getDrawable();

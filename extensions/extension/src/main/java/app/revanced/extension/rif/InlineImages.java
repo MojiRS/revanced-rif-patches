@@ -256,30 +256,20 @@ public final class InlineImages {
                     if (linkText.equals(pageUrl) || isHideableLinkText(linkText)) {
                         // Bare URL, or a Reddit-app media marker like "[gif]": replace
                         // the link text with the image inline (hide the text).
-                        // An image that starts its own line (at the top of the comment, or
-                        // after a newline) needs the padded span: a plain ALIGN_BASELINE
-                        // ImageSpan alone on a line is drawn shifted up by the font descent,
-                        // overlapping (clipping) the bottom of the previous line.
-                        boolean leading = startsLine(body, start);
                         if (multiImage) {
-                            setAlbumSpan(body, new AlbumImageSpan(drawable, album, link, leading), start, end);
+                            setAlbumSpan(body, new AlbumImageSpan(drawable, album, link), start, end);
                         } else {
-                            body.setSpan(
-                                    leading ? new LeadingSpacedImageSpan(drawable)
-                                            : new FitImageSpan(drawable),
-                                    start, end, Spanned.SPAN_INCLUSIVE_EXCLUSIVE);
+                            body.setSpan(new FitImageSpan(drawable), start, end,
+                                    Spanned.SPAN_INCLUSIVE_EXCLUSIVE);
                         }
                     } else {
                         // [text](url) link: keep the visible text and render the image
                         // on its own line just below it (U+FFFC = object replacement).
-                        // LeadingSpacedImageSpan adds ~1/3 line of space above the
-                        // image so it doesn't crowd the link text, matching the gap
-                        // used for an image directly under a comment header.
                         body.insert(end, "\n￼");
                         if (multiImage) {
-                            setAlbumSpan(body, new AlbumImageSpan(drawable, album, link, true), end + 1, end + 2);
+                            setAlbumSpan(body, new AlbumImageSpan(drawable, album, link), end + 1, end + 2);
                         } else {
-                            ImageSpan image = new LeadingSpacedImageSpan(drawable);
+                            ImageSpan image = new FitImageSpan(drawable);
                             body.setSpan(image, end + 1, end + 2, Spanned.SPAN_INCLUSIVE_EXCLUSIVE);
                             // The image sits outside the link span here, so make it open the
                             // link itself (bare-link images already sit on the link span).
@@ -613,6 +603,13 @@ public final class InlineImages {
     /**
      * Inline image that can shrink to fit its comment's width: images are decoded for a
      * top-level comment, but replies are indented. Starts at its drawable's decoded size.
+     *
+     * Reserves ~1/3 of a text line of space above the image (via the line ascent), so it
+     * never clips the line above. A plain ALIGN_BASELINE ImageSpan alone on a line is drawn
+     * shifted up by the font descent, over the bottom of the previous line. That happens
+     * whenever the image ends up starting a line, which can't be told from the text: an
+     * image link after text on the same line ("... wrong. https://imgur.com/x") wraps to
+     * its own line when it's too wide to fit. So every image gets the gap.
      */
     static class FitImageSpan extends ImageSpan {
         final int natW;
@@ -628,6 +625,25 @@ public final class InlineImages {
         /** Drawn width. */
         int width() {
             return getDrawable().getBounds().right;
+        }
+
+        /** Drawn height. */
+        int height() {
+            return getDrawable().getBounds().bottom;
+        }
+
+        @Override
+        public int getSize(Paint paint, CharSequence text, int start, int end,
+                           Paint.FontMetricsInt fm) {
+            if (fm != null) {
+                Paint.FontMetricsInt pfm = paint.getFontMetricsInt();
+                int pad = Math.round((pfm.descent - pfm.ascent) / 3f);
+                fm.ascent = -height() - pad;
+                fm.top = fm.ascent;
+                fm.descent = 0;
+                fm.bottom = 0;
+            }
+            return width();
         }
 
         /** Size for at most [maxW] wide, keeping the aspect ratio. */
@@ -657,7 +673,6 @@ public final class InlineImages {
     private static final class AlbumImageSpan extends FitImageSpan {
         final List<String> urls;
         final URLSpan link;
-        final boolean leading;
         // The box: natW x natH (the first image's decoded size), shrunk by fitWidth().
         int boxW;
         int boxH;
@@ -668,7 +683,7 @@ public final class InlineImages {
         int index;
         boolean loading;
 
-        AlbumImageSpan(Drawable first, List<String> urls, URLSpan link, boolean leading) {
+        AlbumImageSpan(Drawable first, List<String> urls, URLSpan link) {
             super(first);
             this.boxW = natW;
             this.boxH = natH;
@@ -676,13 +691,17 @@ public final class InlineImages {
             this.currentH = natH;
             this.urls = urls;
             this.link = link;
-            this.leading = leading;
             this.current = first;
         }
 
         @Override
         int width() {
             return boxW;
+        }
+
+        @Override
+        int height() {
+            return boxH;
         }
 
         @Override
@@ -698,23 +717,6 @@ public final class InlineImages {
         @Override
         public Drawable getDrawable() {
             return current;
-        }
-
-        @Override
-        public int getSize(Paint paint, CharSequence text, int start, int end, Paint.FontMetricsInt fm) {
-            if (fm != null) {
-                // Same metrics as the single-image spans (incl. LeadingSpacedImageSpan's gap).
-                int pad = 0;
-                if (leading) {
-                    Paint.FontMetricsInt pfm = paint.getFontMetricsInt();
-                    pad = Math.round((pfm.descent - pfm.ascent) / 3f);
-                }
-                fm.ascent = -boxH - pad;
-                fm.top = fm.ascent;
-                fm.descent = 0;
-                fm.bottom = 0;
-            }
-            return boxW;
         }
 
         @Override
@@ -1236,16 +1238,6 @@ public final class InlineImages {
         return Math.round(value * res.getDisplayMetrics().density);
     }
 
-    /** True if only whitespace separates [start] from the start of its line (or the text). */
-    static boolean startsLine(CharSequence cs, int start) {
-        for (int i = start - 1; i >= 0; i--) {
-            char c = cs.charAt(i);
-            if (c == '\n') return true;
-            if (!Character.isWhitespace(c)) return false;
-        }
-        return true;
-    }
-
     /**
      * Link display text that is just a media marker (e.g. the Reddit app renders a
      * gif upload as a "[gif]" link). For these we hide the text and show the image
@@ -1256,30 +1248,4 @@ public final class InlineImages {
         return text.trim().equalsIgnoreCase("[gif]");
     }
 
-    /**
-     * ImageSpan that reserves ~1/3 of a text line of extra space above the image
-     * via the line ascent. Used only for a leading image so it sits a little
-     * below the comment header instead of crowding it; the image itself stays
-     * bottom-aligned (inherited draw), so the padding lands above it.
-     */
-    private static final class LeadingSpacedImageSpan extends FitImageSpan {
-        LeadingSpacedImageSpan(Drawable d) {
-            super(d);
-        }
-
-        @Override
-        public int getSize(Paint paint, CharSequence text, int start, int end,
-                           Paint.FontMetricsInt fm) {
-            Rect bounds = getDrawable().getBounds();
-            if (fm != null) {
-                Paint.FontMetricsInt pfm = paint.getFontMetricsInt();
-                int pad = Math.round((pfm.descent - pfm.ascent) / 3f);
-                fm.ascent = -bounds.bottom - pad;
-                fm.top = fm.ascent;
-                fm.descent = 0;
-                fm.bottom = 0;
-            }
-            return bounds.right;
-        }
-    }
 }
