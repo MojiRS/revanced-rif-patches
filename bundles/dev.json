@@ -1,0 +1,7 @@
+{
+  "created_at": "2026-10-10T19:44:36",
+  "description": "Test build, not a release. For stable builds use main/bundles/stable.json.\n\n- Fix YouTube videos: YouTube links play in rif's built-in player again.\n- Inline images no longer cut off the text line above them (from 1.6.1).\n",
+  "download_url": "https://raw.githubusercontent.com/MojiRS/revanced-rif-patches/test-builds/patches-1.7.0-dev2.rvp",
+  "signature_download_url": "N/A",
+  "version": "v1.7.0-dev2"
+}
