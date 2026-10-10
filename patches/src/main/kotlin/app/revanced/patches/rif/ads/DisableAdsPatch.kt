@@ -86,7 +86,7 @@ val disableAdsSettingsResourcePatch = resourcePatch(
 @Suppress("unused")
 val disableAdsPatch = bytecodePatch(
     name = "Disable ads",
-    description = "Removes AppLovin native feed ads, banner ads, and image-viewer ads from rif is fun.",
+    description = "Removes and does not render all ads.",
 ) {
     compatibleWith(RIF_FREE_COMPATIBILITY)
     dependsOn(disableAdsSettingsResourcePatch, revancedSettingsPatch)
