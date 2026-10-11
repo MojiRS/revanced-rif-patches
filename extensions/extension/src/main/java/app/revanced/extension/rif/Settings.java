@@ -21,6 +21,9 @@ public final class Settings {
     public static final String KEY_INLINE_IMAGES_LONG_PRESS_DELAY = "INLINE_IMAGES_LONG_PRESS_DELAY";
     public static final String KEY_INLINE_VIDEOS = "INLINE_VIDEOS";
     public static final String KEY_INLINE_VIDEOS_AUTOPLAY = "INLINE_VIDEOS_AUTOPLAY";
+    public static final String KEY_YOUTUBE_CAPTIONS_LANDSCAPE = "YOUTUBE_CAPTIONS_LANDSCAPE";
+    public static final String KEY_YOUTUBE_CAPTIONS_VERTICAL = "YOUTUBE_CAPTIONS_VERTICAL";
+    public static final String KEY_YOUTUBE_CAPTIONS_SHORTS = "YOUTUBE_CAPTIONS_SHORTS";
 
     private static SharedPreferences prefs;
     private static Context appContext;
@@ -105,6 +108,21 @@ public final class Settings {
 
     public static boolean autoplayInlineVideos() {
         return get(KEY_INLINE_VIDEOS_AUTOPLAY, true);
+    }
+
+    /** Captions on by default: landscape videos (also when the shape is unknown). Off unless turned on. */
+    public static boolean youtubeCaptionsLandscape() {
+        return get(KEY_YOUTUBE_CAPTIONS_LANDSCAPE, false);
+    }
+
+    /** Captions on by default: vertical videos. */
+    public static boolean youtubeCaptionsVertical() {
+        return get(KEY_YOUTUBE_CAPTIONS_VERTICAL, false);
+    }
+
+    /** Captions on by default: videos opened from a youtube.com/shorts link. */
+    public static boolean youtubeCaptionsShorts() {
+        return get(KEY_YOUTUBE_CAPTIONS_SHORTS, false);
     }
 
     public static boolean longPressImageSelectsComment() {

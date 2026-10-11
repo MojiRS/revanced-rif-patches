@@ -6,6 +6,7 @@ import android.content.Intent;
 import android.content.res.ColorStateList;
 import android.content.res.Resources;
 import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.graphics.Path;
@@ -25,7 +26,6 @@ import android.os.Build;
 import android.os.SystemClock;
 import android.text.Spannable;
 import android.text.Spanned;
-import android.text.SpannableStringBuilder;
 import android.text.style.URLSpan;
 import android.util.Log;
 import android.util.LruCache;
@@ -43,7 +43,9 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
+import java.io.ByteArrayOutputStream;
 import java.lang.ref.WeakReference;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -58,8 +60,9 @@ import java.util.regex.Pattern;
 /**
  * Inline comment videos (part of "Inline comment images").
  *
- * {@link #embed} (background, from InlineImages.embed) adds a {@link VideoSpan} on its own
- * line below a video link: a box the size of the video showing its first frame. {@link
+ * {@link #load} (background, from InlineImages.load) resolves a video link and grabs its
+ * first frame; InlineImages then puts a {@link VideoSpan} on its own line below the link: a
+ * box the size of the video showing that frame. {@link
  * #attach} (main thread, from InlineImages.attach) puts an overlay over each such box, in
  * the FrameLayout rif wraps comment and selftext bodies in: a TextureView that MediaPlayer
  * plays the video into (drawn by the hardware straight to the screen), and media controls.
@@ -133,6 +136,23 @@ public final class InlineVideos {
         boolean hasSound() {
             return audioUrl != null || embeddedAudio;
         }
+
+        /** Disk form: one field per line. */
+        String serialize() {
+            return url + "\n" + posterUrl + "\n" + (audioUrl == null ? "" : audioUrl) + "\n"
+                    + embeddedAudio + "\n" + width + "\n" + height;
+        }
+
+        static Video parse(String s) {
+            if (s == null) return null;
+            try {
+                String[] f = s.split("\n", -1);
+                return new Video(f[0], f[1], f[2].isEmpty() ? null : f[2], Boolean.parseBoolean(f[3]),
+                        Integer.parseInt(f[4]), Integer.parseInt(f[5]));
+            } catch (Throwable t) {
+                return null;
+            }
+        }
     }
 
     private static final Video NONE = new Video("", "", null, false, 0, 0);
@@ -144,47 +164,58 @@ public final class InlineVideos {
                 || IMGUR_VIDEO.matcher(url).matches());
     }
 
-    // ---- background: embed a video span -------------------------------------------
+    // ---- background: resolve a video and its still frame ---------------------------------
 
     /**
-     * If [link] is a video link, embeds it (when inline videos are on and it resolves) and
-     * returns true, so InlineImages skips it. Background thread (network).
+     * What video link [url] shows (InlineImages.load's video part): the video and its still
+     * frame, null if inline videos are off or it isn't playable, or Media.missing if
+     * [network] is false and it isn't cached.
      */
-    static boolean embed(SpannableStringBuilder body, URLSpan link) {
-        String url = link.getURL();
-        if (!isVideoLink(url)) return false;
-        if (!Settings.inlineVideos()) return true;
-        try {
-            Video video = resolve(url);
-            if (video == null) return true;
-            int end = body.getSpanEnd(link);
-            if (end < 0) return true;
-            // The link text stays (tapping it opens the link as usual); the video goes on
-            // its own line below it (U+FFFC = object replacement).
-            body.insert(end, "\n\uFFFC");
-            VideoSpan span = new VideoSpan(poster(video), video, link);
-            body.setSpan(span, end + 1, end + 2, Spanned.SPAN_INCLUSIVE_EXCLUSIVE);
-            InlineImages.setImageClickSpan(body, span, link, end + 1, end + 2);
-        } catch (Throwable t) {
-            Log.w(TAG, "video embed failed: " + url, t);
+    static InlineImages.Media load(String url, boolean network) {
+        if (!Settings.inlineVideos()) return null;
+        Video video = resolve(url, network);
+        if (video == MISSING) return InlineImages.Media.missingVideo(0, 0);
+        if (video == null) return null;
+        Poster poster = poster(video, network);
+        if (poster == null) {
+            if (video.width <= 0 || video.height <= 0) return InlineImages.Media.missingVideo(0, 0);
+            int[] size = displaySize(video.width, video.height);
+            return InlineImages.Media.missingVideo(size[0], size[1]);
         }
-        return true;
+        return InlineImages.Media.video(video, poster);
     }
 
-    private static Video resolve(String url) {
+    /** The span for a loaded video ([media] from load()), to go on its own line below [link]. */
+    static VideoSpan newSpan(InlineImages.Media media, URLSpan link) {
+        return new VideoSpan(posterDrawable(media.poster), media.video, link);
+    }
+
+    private static final Video MISSING = new Video("", "", null, false, 0, 0);
+
+    private static Video resolve(String url, boolean network) {
         Video cached = RESOLVED.get(url);
         if (cached != null) return cached == NONE ? null : cached;
-        Video video = null;
         Matcher m;
+        if ((m = IMGUR_VIDEO.matcher(url)).matches()) {
+            String mp4 = "https://i.imgur.com/" + m.group(1) + ".mp4";
+            Video video = new Video(mp4, mp4, null, true, 0, 0); // size comes from the frame grab
+            RESOLVED.put(url, video);
+            return video;
+        }
+        Video stored = Video.parse(InlineCache.getText("video:" + url));
+        if (stored != null) {
+            RESOLVED.put(url, stored);
+            return stored;
+        }
+        if (!network) return MISSING;
+        Video video = null;
         if ((m = PLAYER_LINK.matcher(url)).matches()) {
             video = fromManifest("https://v.redd.it/link/" + m.group(1) + "/asset/" + m.group(2) + "/");
         } else if ((m = V_REDD_IT.matcher(url)).matches()) {
             video = fromManifest("https://v.redd.it/" + m.group(1) + "/");
-        } else if ((m = IMGUR_VIDEO.matcher(url)).matches()) {
-            String mp4 = "https://i.imgur.com/" + m.group(1) + ".mp4";
-            video = new Video(mp4, mp4, null, true, 0, 0); // size comes from the frame grab
         }
         RESOLVED.put(url, video == null ? NONE : video);
+        if (video != null) InlineCache.putText("video:" + url, video.serialize());
         return video;
     }
 
@@ -247,8 +278,65 @@ public final class InlineVideos {
         return file.startsWith("http") ? file : base + file;
     }
 
-    /** The video's first frame, sized for display (black if it can't be grabbed). */
-    private static Drawable poster(Video video) {
+    /** A video's still frame (null if it couldn't be grabbed: then black) and the video's size. */
+    static final class Poster {
+        final Bitmap frame;
+        final int width;
+        final int height;
+
+        Poster(Bitmap frame, int width, int height) {
+            this.frame = frame;
+            this.width = width;
+            this.height = height;
+        }
+
+        /** Disk form: the size, then the frame as a JPEG. */
+        byte[] serialize() {
+            ByteArrayOutputStream out = new ByteArrayOutputStream(32 * 1024);
+            out.write(ByteBuffer.allocate(8).putInt(width).putInt(height).array(), 0, 8);
+            frame.compress(Bitmap.CompressFormat.JPEG, 85, out);
+            return out.toByteArray();
+        }
+
+        static Poster parse(byte[] data) {
+            if (data == null || data.length <= 8) return null;
+            ByteBuffer header = ByteBuffer.wrap(data, 0, 8);
+            int w = header.getInt(), h = header.getInt();
+            Bitmap frame = BitmapFactory.decodeByteArray(data, 8, data.length - 8);
+            return frame == null || w <= 0 || h <= 0 ? null : new Poster(frame, w, h);
+        }
+    }
+
+    // Still frames by their source URL (~8 MB). Grabbing one costs a few hundred ms of
+    // network and decoding, so they're also kept on disk.
+    private static final LruCache<String, Poster> POSTERS = new LruCache<String, Poster>(8 * 1024 * 1024) {
+        @Override
+        protected int sizeOf(String key, Poster value) {
+            return value.frame == null ? 1 : value.frame.getAllocationByteCount();
+        }
+    };
+
+    /** The video's still frame: cached, or grabbed if [network] (else null). */
+    private static Poster poster(Video video, boolean network) {
+        Poster poster = POSTERS.get(video.posterUrl);
+        if (poster != null) return poster;
+        poster = Poster.parse(InlineCache.get("poster:" + video.posterUrl));
+        if (poster != null) {
+            POSTERS.put(video.posterUrl, poster);
+            return poster;
+        }
+        if (!network) return null;
+        poster = grabPoster(video);
+        // A failed grab (black box) isn't kept: the next render tries again.
+        if (poster.frame != null) {
+            POSTERS.put(video.posterUrl, poster);
+            InlineCache.put("poster:" + video.posterUrl, poster.serialize());
+        }
+        return poster;
+    }
+
+    /** Grabs the video's first frame (network), at most screen-wide. */
+    private static Poster grabPoster(Video video) {
         Bitmap frame = null;
         int w = video.width, h = video.height;
         MediaMetadataRetriever retriever = new MediaMetadataRetriever();
@@ -283,21 +371,28 @@ public final class InlineVideos {
             w = 16;
             h = 9;
         }
-        int[] out = displaySize(w, h);
-        Drawable d;
-        if (frame != null) {
-            Bitmap scaled = Bitmap.createScaledBitmap(frame, out[0], out[1], true);
+        int maxW = InlineImages.targetWidth();
+        if (frame != null && frame.getWidth() > maxW) {
+            Bitmap scaled = Bitmap.createScaledBitmap(frame, maxW,
+                    Math.max(1, Math.round(frame.getHeight() * (float) maxW / frame.getWidth())), true);
             if (scaled != frame) frame.recycle();
-            d = new BitmapDrawable(Resources.getSystem(), scaled);
-        } else {
-            d = new ColorDrawable(0xFF000000);
+            frame = scaled;
         }
+        return new Poster(frame, w, h);
+    }
+
+    /** The still frame, sized for display (black if there is none). */
+    private static Drawable posterDrawable(Poster poster) {
+        int[] out = displaySize(poster.width, poster.height);
+        // The frame is shared between spans: each gets its own drawable, scaling it on draw.
+        Drawable d = poster.frame != null
+                ? new BitmapDrawable(Resources.getSystem(), poster.frame) : new ColorDrawable(0xFF000000);
         d.setBounds(0, 0, out[0], out[1]);
         return d;
     }
 
     /** Image sizing, but no taller than 90% of the screen (portrait videos). */
-    private static int[] displaySize(int w, int h) {
+    static int[] displaySize(int w, int h) {
         int[] out = InlineImages.outSize(w, h);
         int maxH = Math.round(Resources.getSystem().getDisplayMetrics().heightPixels * 0.9f);
         if (out[1] > maxH) {
@@ -1141,7 +1236,9 @@ public final class InlineVideos {
     private static int rifColor(Context ctx, String name, int fallback) {
         int id = rifResource(ctx, name, "color");
         try {
-            return id == 0 ? fallback : ctx.getResources().getColor(id, null);
+            if (id == 0) return fallback;
+            return Build.VERSION.SDK_INT >= 23 ? ctx.getResources().getColor(id, null)
+                    : ctx.getResources().getColor(id);
         } catch (Throwable t) {
             return fallback;
         }

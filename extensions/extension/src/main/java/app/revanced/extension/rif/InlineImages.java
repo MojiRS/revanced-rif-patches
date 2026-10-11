@@ -11,6 +11,7 @@ import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.drawable.Animatable;
 import android.graphics.drawable.BitmapDrawable;
+import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
 import android.os.Build;
 import android.os.Handler;
@@ -40,6 +41,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.lang.ref.WeakReference;
 import java.net.HttpURLConnection;
@@ -60,9 +62,11 @@ import java.util.regex.Pattern;
  * Two injection points:
  *  - {@link #embed(SpannableStringBuilder)} is called from rif's
  *    CommentThing.e(...) on a background thread, before the comment body is
- *    cached/shown. It fetches each direct-image link, scales it, and overlays an
- *    ImageSpan. Animated GIFs (API 28+) decode to an AnimatedImageDrawable but
- *    are not started yet (no host view exists here).
+ *    cached/shown. It overlays an ImageSpan on each image link, scaled to fit.
+ *    Images not in the memory or disk cache (InlineCache) are loaded by InlineLoader
+ *    and filled in later, a placeholder box standing in meanwhile. Animated GIFs
+ *    (API 28+) decode to an AnimatedImageDrawable but are not started yet (no host
+ *    view exists here).
  *  - {@link #attach(TextView)} is called from rif's comment ViewHolder bind
  *    (n2.o.h, right after setText) on the main thread. It wires each animated
  *    drawable's callback to the TextView and starts it, so frames invalidate
@@ -122,8 +126,8 @@ public final class InlineImages {
     private static final Pattern IMGUR_ALBUM = Pattern.compile(
             "^https?://(?:www\\.|m\\.)?imgur\\.com/(a|gallery)/([A-Za-z0-9]+)/?(?:[?#].*)?$",
             Pattern.CASE_INSENSITIVE);
-    // Album link -> its image URLs (empty list = not listable; fall back to og:image).
-    private static final LruCache<String, List<String>> ALBUMS = new LruCache<>(128);
+    // Album link -> its items (Album.NONE = not listable; fall back to og:image).
+    private static final LruCache<String, Album> ALBUMS = new LruCache<>(128);
 
     // Last touch position per TextView (recorded by TOUCH_LISTENER), so an album span's
     // onClick knows which part of the image was tapped. Values never reference keys.
@@ -210,11 +214,27 @@ public final class InlineImages {
 
     // ---- background: embed images into the comment spannable -------------------
 
+    // How long embed() may wait for a body's uncached media (all of it together) before
+    // showing placeholders, and only if all of it is loading already (nothing queued).
+    // Short: rif renders the bodies one after another, and a cold fetch takes 80-900 ms,
+    // so the wait seldom pays off but delays every later comment.
+    private static final long WAIT_BUDGET_MS = 50;
+
+    /**
+     * Embeds the media of [body]'s links. Called by rif's body render, which renders a
+     * list's bodies one after another on one thread, so this must not wait on the network:
+     * what's cached (memory or disk) is embedded now; the rest is loaded by InlineLoader
+     * and filled in later on the main thread (see {@link #fill}). Meanwhile a placeholder
+     * box stands where the media will be: in place of a bare link's text, or on the line
+     * below a [text](url) link or a video. Nothing touches [body] off the main thread after
+     * this returns.
+     */
     public static void embed(SpannableStringBuilder body) {
         try {
             if (body == null) return;
             if (!Settings.inlineImages()) return; // feature disabled in settings
             if (Looper.myLooper() == Looper.getMainLooper()) return; // never block UI
+            long batch = InlineLoader.batch(); // for every body, so batches follow rif's renders
 
             URLSpan[] links = body.getSpans(0, body.length(), URLSpan.class);
             if (links == null || links.length == 0) return;
@@ -225,63 +245,464 @@ public final class InlineImages {
             Collections.sort(ordered,
                     (a, b) -> Integer.compare(body.getSpanStart(b), body.getSpanStart(a)));
 
+            // What each link shows, from the caches alone (no network).
+            List<Plan> plans = new ArrayList<>();
             for (URLSpan link : ordered) {
                 try {
-                    String pageUrl = link.getURL();
-                    // Video links (comment videos, v.redd.it, imgur gifv/mp4) are InlineVideos'.
-                    if (InlineVideos.embed(body, link)) continue;
-                    // imgur albums are listed via the API (so multi-image albums can be
-                    // cycled inline). Direct image links are used as-is; other known media
-                    // hosts (imgur pages, redgifs, reddit galleries, ...) are resolved to
-                    // their image via the page's og:image tag. Anything else stays a link.
-                    List<String> album = imgurAlbumImages(pageUrl);
-                    String imageUrl = album != null ? album.get(0) : resolveImageUrl(pageUrl);
-                    if (imageUrl == null) continue;
-                    boolean multiImage = album != null && album.size() > 1;
+                    Media media = load(link.getURL(), false);
+                    if (media != null) plans.add(new Plan(link, media));
+                } catch (Throwable ignored) {
+                    // leave this link as a plain link
+                }
+            }
+            if (plans.isEmpty()) return;
 
-                    int start = body.getSpanStart(link);
-                    int end = body.getSpanEnd(link);
-                    if (start < 0 || end < 0 || start >= end) continue;
+            // Load the rest in the background. If all of it starts loading at once (no
+            // waiting for a thread or a host's slot), give it a moment: what arrives in time
+            // is embedded now, with no placeholder.
+            List<InlineLoader.Task> tasks = new ArrayList<>();
+            for (Plan p : plans) {
+                if (!p.media.missing) continue;
+                final String url = p.link.getURL();
+                p.task = InlineLoader.submit(url, url, batch, () -> loadDecoded(url));
+                tasks.add(p.task);
+            }
+            if (!tasks.isEmpty() && InlineLoader.allStarting(tasks)) {
+                InlineLoader.await(tasks, SystemClock.uptimeMillis() + WAIT_BUDGET_MS);
+            }
 
-                    byte[] data = fetch(imageUrl);
-                    if (data == null) continue;
-
-                    Drawable drawable = toDrawable(data);
-                    if (drawable == null) {
-                        Log.w(TAG, "image decode failed: " + imageUrl);
+            for (Plan p : plans) {
+                try {
+                    Media media = p.media;
+                    if (p.task != null && p.task.isDone()) {
+                        Object result = p.task.result();
+                        media = result instanceof Media ? (Media) result : null;
+                        p.task = null;
+                    }
+                    if (media == null) continue;
+                    int start = body.getSpanStart(p.link);
+                    int end = body.getSpanEnd(p.link);
+                    if (start < 0 || end < 0 || start >= end) {
+                        p.task = null;
                         continue;
                     }
-
                     String linkText = body.subSequence(start, end).toString();
-                    if (linkText.equals(pageUrl) || isHideableLinkText(linkText)) {
-                        // Bare URL, or a Reddit-app media marker like "[gif]": replace
-                        // the link text with the image inline (hide the text).
-                        if (multiImage) {
-                            setAlbumSpan(body, new AlbumImageSpan(drawable, album, link), start, end);
+                    boolean bare = linkText.equals(p.link.getURL()) || isHideableLinkText(linkText);
+                    if (!media.missing) {
+                        Built built = build(media, p.link, bare);
+                        if (built == null) continue;
+                        if (built.below) {
+                            body.insert(end, "\n\uFFFC");
+                            setSpans(body, built, end + 1, end + 2);
                         } else {
-                            body.setSpan(new FitImageSpan(drawable), start, end,
-                                    Spanned.SPAN_INCLUSIVE_EXCLUSIVE);
+                            setSpans(body, built, start, end);
                         }
+                    } else if (bare && !media.isVideo) {
+                        // Bare URL (or "[gif]"): the placeholder replaces the link text
+                        // already, as the image will (a visible link would look like it
+                        // needs tapping). The link span under it still opens the link.
+                        PlaceholderSpan box = new PlaceholderSpan(media.hintW, media.hintH);
+                        body.setSpan(box, start, end, Spanned.SPAN_INCLUSIVE_EXCLUSIVE);
+                        p.bare = true;
+                        p.marker = box;
                     } else {
-                        // [text](url) link: keep the visible text and render the image
-                        // on its own line just below it (U+FFFC = object replacement).
-                        body.insert(end, "\n￼");
-                        if (multiImage) {
-                            setAlbumSpan(body, new AlbumImageSpan(drawable, album, link), end + 1, end + 2);
-                        } else {
-                            ImageSpan image = new FitImageSpan(drawable);
-                            body.setSpan(image, end + 1, end + 2, Spanned.SPAN_INCLUSIVE_EXCLUSIVE);
-                            // The image sits outside the link span here, so make it open the
-                            // link itself (bare-link images already sit on the link span).
-                            setImageClickSpan(body, image, link, end + 1, end + 2);
-                        }
+                        // [text](url) link or a video (also an imgur album already known to
+                        // hold one): the line below gets a placeholder box.
+                        PlaceholderSpan box = new PlaceholderSpan(media.hintW, media.hintH);
+                        body.insert(end, "\n\uFFFC");
+                        body.setSpan(box, end + 1, end + 2, Spanned.SPAN_INCLUSIVE_EXCLUSIVE);
+                        box.click = setImageClickSpan(body, box, p.link, end + 1, end + 2);
+                        p.marker = box;
                     }
                 } catch (Throwable ignored) {
                     // leave this link as a plain link
                 }
             }
+
+            // Only now (every change to the text made) hand the rest to the loader's
+            // completions, in reading order.
+            for (int i = plans.size() - 1; i >= 0; i--) {
+                final Plan p = plans.get(i);
+                if (p.marker == null || p.task == null) continue;
+                p.task.whenDone(result -> deliver(body, p, result));
+            }
         } catch (Throwable ignored) {
         }
+    }
+
+    /** One media link of a body being embedded. */
+    private static final class Plan {
+        final URLSpan link;
+        final Media media;
+        // Set while it loads in the background:
+        InlineLoader.Task task;
+        // Its PlaceholderSpan in the text: over the link text (bare) or on the line below.
+        PlaceholderSpan marker;
+        boolean bare;
+
+        Plan(URLSpan link, Media media) {
+            this.link = link;
+            this.media = media;
+        }
+    }
+
+    /** The spans that show a link's media. */
+    private static final class Built {
+        final ImageSpan image;
+        final ImageClickSpan click; // or null: a bare link's single image sits on the link
+        final boolean below; // on its own line below the link text
+
+        Built(ImageSpan image, ImageClickSpan click, boolean below) {
+            this.image = image;
+            this.click = click;
+            this.below = below;
+        }
+    }
+
+    /**
+     * The spans for [media] at [link]. Decodes images (unless the loader already did), so
+     * not on the main thread.
+     */
+    private static Built build(Media media, URLSpan link, boolean bare) {
+        if (media.video != null) {
+            ImageSpan span = InlineVideos.newSpan(media, link);
+            return new Built(span, new ImageClickSpan(span, link), true);
+        }
+        Drawable drawable = media.takeDecoded();
+        if (drawable == null) drawable = toDrawable(media.data);
+        if (drawable == null) {
+            Log.w(TAG, "image decode failed: " + link.getURL());
+            return null;
+        }
+        boolean multiImage = media.album != null && media.album.urls.size() > 1;
+        // A bare URL or a Reddit-app media marker like "[gif]": the image replaces the link
+        // text. A [text](url) link keeps its text and gets the image on its own line below.
+        ImageSpan image = multiImage
+                ? new AlbumImageSpan(drawable, media.album.urls, link) : new FitImageSpan(drawable);
+        // Off the link span (or an album, for its arrows) the image needs its own tap handler.
+        ImageClickSpan click = multiImage || !bare ? new ImageClickSpan(image, link) : null;
+        return new Built(image, click, !bare);
+    }
+
+    private static void setSpans(Spannable text, Built built, int start, int end) {
+        text.setSpan(built.image, start, end, Spanned.SPAN_INCLUSIVE_EXCLUSIVE);
+        // Top priority so rif's movement method (which takes the first ClickableSpan under
+        // the tap) picks this over a link span covering the same text.
+        if (built.click != null) {
+            text.setSpan(built.click, start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE | Spanned.SPAN_PRIORITY);
+        }
+    }
+
+    /**
+     * A background load for [p] finished (on a loader thread): build its spans here, then
+     * fill them in on the main thread.
+     */
+    private static void deliver(SpannableStringBuilder body, Plan p, Object result) {
+        Built built = null;
+        try {
+            if (result instanceof Media) built = build((Media) result, p.link, p.bare);
+        } catch (Throwable t) {
+            Log.w(TAG, "inline media build failed: " + p.link.getURL(), t);
+        }
+        final Built b = built;
+        MAIN.post(() -> fill(body, p, b));
+    }
+
+    /**
+     * Main thread: swaps [p]'s marker for its media ([built]; null = it failed) in the
+     * rendered body and in every TextView showing it. TextView.setText() copies the text
+     * but shares the span objects, so a TextView shows this body exactly when its text
+     * holds the marker. Rows recycled to other comments, or bodies already filled, don't.
+     */
+    private static void fill(SpannableStringBuilder body, Plan p, Built built) {
+        try {
+            if (body.getSpanStart(p.marker) < 0) return;
+            List<TextView> showing = new ArrayList<>();
+            for (TextView tv : new ArrayList<>(WATCHED.keySet())) {
+                CharSequence text = tv == null ? null : tv.getText();
+                if (text instanceof Spannable && ((Spanned) text).getSpanStart(p.marker) >= 0) showing.add(tv);
+            }
+            swap(body, p, built);
+            for (TextView tv : showing) {
+                CharSequence text = tv.getText();
+                if (text != body && text instanceof Spannable && !swap((Spannable) text, p, built)) {
+                    // Its copy of the text can't take the change (a line to insert or
+                    // delete, and the copy isn't Editable): show the changed body instead,
+                    // as rif's next bind would. Same span objects, so GIFs and videos
+                    // carry on (only a text selection is lost).
+                    tv.setText(body);
+                } else if (isHeightLimited(tv)) {
+                    // A feed preview (maxLines): the span change re-flows the text, but the
+                    // TextView's per-block display lists keep text below the cut-off where
+                    // it was, drawn over the filled image. Setting the text again rebuilds
+                    // the layout and every block (the same span objects, so GIFs and videos
+                    // carry on; previews aren't selectable).
+                    tv.setText(tv.getText());
+                } else {
+                    tv.requestLayout();
+                    tv.invalidate();
+                }
+                // Span changes don't fire TextWatchers: re-attach here (fits the image,
+                // starts a GIF, adds a video's overlay).
+                attach(tv);
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "inline media fill failed", t);
+        }
+    }
+
+    /** True if [tv] shows at most so many lines or pixels (or ellipsizes). */
+    private static boolean isHeightLimited(TextView tv) {
+        int lines = tv.getMaxLines(), height = tv.getMaxHeight();
+        return (lines >= 0 && lines != Integer.MAX_VALUE) || (height >= 0 && height != Integer.MAX_VALUE)
+                || tv.getEllipsize() != null;
+    }
+
+    /**
+     * Swaps [p]'s placeholder in [text] for [built], or removes it ([built] null). False
+     * (and [text] left as it was) if that needs inserting or deleting text and [text] isn't
+     * Editable.
+     */
+    private static boolean swap(Spannable text, Plan p, Built built) {
+        PlaceholderSpan box = p.marker;
+        int start = text.getSpanStart(box);
+        int end = text.getSpanEnd(box);
+        if (start < 0 || end < start) return true;
+        boolean editable = text instanceof Editable;
+        // Failed: a bare link's text shows again; a placeholder's own line goes again.
+        boolean deleteLine = built == null && !p.bare;
+        // A bare link that turned out to be a video (an imgur album holding one): it goes
+        // on a line below the link.
+        boolean insertLine = built != null && p.bare && built.below;
+        if ((deleteLine || insertLine) && !editable) return false;
+
+        text.removeSpan(box);
+        if (box.click != null) text.removeSpan(box.click);
+        if (deleteLine) {
+            if (start >= 1 && end == start + 1
+                    && text.charAt(start - 1) == '\n' && text.charAt(start) == '\uFFFC') {
+                ((Editable) text).delete(start - 1, end);
+            } else { // not the line we inserted (shouldn't happen): take no space
+                box.collapsed = true;
+                text.setSpan(box, start, end, Spanned.SPAN_INCLUSIVE_EXCLUSIVE);
+            }
+            return true;
+        }
+        if (built == null) return true;
+        if (insertLine) {
+            ((Editable) text).insert(end, "\n\uFFFC");
+            start = end + 1;
+            end = end + 2;
+        }
+        setSpans(text, built, start, end);
+        return true;
+    }
+
+    /**
+     * Stands in for media still loading: a faint box, the size of the media if known
+     * (else a couple of lines high). Taps open the link (via the link span under a bare
+     * link's box, else via its own click span).
+     */
+    static final class PlaceholderSpan extends FitImageSpan {
+        ImageClickSpan click; // null over a bare link
+        // Its media failed and the box couldn't be removed from the text: takes no space.
+        boolean collapsed;
+
+        PlaceholderSpan(int w, int h) {
+            super(box(w, h));
+        }
+
+        private static Drawable box(int w, int h) {
+            if (w <= 0 || h <= 0) {
+                w = targetWidth();
+                h = dp(Resources.getSystem(), 40);
+            }
+            Drawable d = new ColorDrawable(0);
+            d.setBounds(0, 0, w, h);
+            return d;
+        }
+
+        @Override
+        public int getSize(Paint paint, CharSequence text, int start, int end, Paint.FontMetricsInt fm) {
+            if (!collapsed) return super.getSize(paint, text, start, end, fm);
+            if (fm != null) {
+                fm.ascent = fm.top = fm.descent = fm.bottom = 0;
+            }
+            return 0;
+        }
+
+        @Override
+        public void draw(Canvas canvas, CharSequence text, int start, int end, float x,
+                         int top, int y, int bottom, Paint paint) {
+            if (collapsed) return;
+            // Where DynamicDrawableSpan (ALIGN_BASELINE) would put it. The text color at low
+            // alpha suits rif's light and dark themes alike.
+            int transY = bottom - height() - paint.getFontMetricsInt().descent;
+            PLACEHOLDER.setColor((paint.getColor() & 0x00FFFFFF) | 0x1A000000);
+            float r = 4 * Resources.getSystem().getDisplayMetrics().density;
+            canvas.drawRoundRect(new RectF(x, transY, x + width(), transY + height()), r, r, PLACEHOLDER);
+        }
+    }
+
+    // ---- loading: caches first, then the network ----------------------------------------
+
+    /** An imgur album: its items' URLs, and the first item's size (0 = unknown). */
+    static final class Album {
+        static final Album NONE = new Album(Collections.<String>emptyList(), 0, 0);
+        static final Album MISSING = new Album(Collections.<String>emptyList(), 0, 0);
+
+        final List<String> urls;
+        final int width;
+        final int height;
+
+        Album(List<String> urls, int width, int height) {
+            this.urls = urls;
+            this.width = width;
+            this.height = height;
+        }
+
+        /** Disk form: the first item's size, then one URL per line. */
+        String serialize() {
+            StringBuilder sb = new StringBuilder().append(width).append(' ').append(height);
+            for (String url : urls) sb.append('\n').append(url);
+            return sb.toString();
+        }
+
+        static Album parse(String s) {
+            if (s == null) return null;
+            try {
+                String[] lines = s.split("\n");
+                String[] size = lines[0].split(" ");
+                List<String> urls = new ArrayList<>(Arrays.asList(lines).subList(1, lines.length));
+                if (urls.isEmpty()) return null;
+                return new Album(Collections.unmodifiableList(urls),
+                        Integer.parseInt(size[0]), Integer.parseInt(size[1]));
+            } catch (Throwable t) {
+                return null;
+            }
+        }
+    }
+
+    /**
+     * What a media link shows: an image's bytes (plus its album, if it's one), or a video
+     * and its still frame. {@code missing} = not cached; then hintW/hintH are its display
+     * size if already known (0 = unknown).
+     */
+    static final class Media {
+        final byte[] data;
+        final String imageUrl; // where data came from
+        final Album album;
+        final InlineVideos.Video video;
+        final InlineVideos.Poster poster;
+        final boolean missing;
+        // A video (also one still missing): it goes on its own line below the link.
+        final boolean isVideo;
+        final int hintW;
+        final int hintH;
+        // The image, decoded by the loader for the first span built from this.
+        private Drawable decoded;
+
+        private Media(byte[] data, String imageUrl, Album album, InlineVideos.Video video,
+                      InlineVideos.Poster poster, boolean missing, boolean isVideo, int hintW, int hintH) {
+            this.data = data;
+            this.imageUrl = imageUrl;
+            this.album = album;
+            this.video = video;
+            this.poster = poster;
+            this.missing = missing;
+            this.isVideo = isVideo;
+            this.hintW = hintW;
+            this.hintH = hintH;
+        }
+
+        static Media missing(int hintW, int hintH) {
+            return new Media(null, null, null, null, null, true, false, hintW, hintH);
+        }
+
+        static Media missingVideo(int hintW, int hintH) {
+            return new Media(null, null, null, null, null, true, true, hintW, hintH);
+        }
+
+        static Media image(byte[] data, String imageUrl, Album album) {
+            return new Media(data, imageUrl, album, null, null, false, false, 0, 0);
+        }
+
+        static Media video(InlineVideos.Video video, InlineVideos.Poster poster) {
+            return new Media(null, null, null, video, poster, false, true, 0, 0);
+        }
+
+        synchronized Drawable takeDecoded() {
+            Drawable d = decoded;
+            decoded = null;
+            return d;
+        }
+    }
+
+    // resolveImageUrl's answer when the page needs fetching and the network isn't allowed.
+    private static final String MISSING_URL = new String("missing");
+
+    /**
+     * What [url] shows, or null if it's not a media link (or it failed). Without
+     * [network], only caches are used, and a link that would need the network gives
+     * {@link Media#missing}.
+     */
+    static Media load(String url, boolean network) {
+        if (url == null) return null;
+        // Video links (comment videos, v.redd.it, imgur gifv/mp4) are InlineVideos'.
+        if (InlineVideos.isVideoLink(url)) return InlineVideos.load(url, network);
+        // imgur albums are listed via the API (so multi-image albums can be cycled inline).
+        // Direct image links are used as-is; other known media hosts (imgur pages, redgifs,
+        // reddit galleries, ...) are resolved to their image via the page's og:image tag.
+        // Anything else stays a link.
+        Album album = imgurAlbum(url, network);
+        if (album == Album.MISSING) return Media.missing(0, 0);
+        String imageUrl = album != null ? album.urls.get(0) : resolveImageUrl(url, network);
+        if (imageUrl == MISSING_URL) return Media.missing(0, 0);
+        if (imageUrl == null) return null;
+        // A one-item album holding a video is listed as its mp4: play it like a plain
+        // i.imgur.com/{id}.mp4 link.
+        if (album != null && album.urls.size() == 1 && InlineVideos.isVideoLink(imageUrl)) {
+            Media video = InlineVideos.load(imageUrl, network);
+            if (video != null && video.missing && video.hintW <= 0 && album.width > 0 && album.height > 0) {
+                int[] size = InlineVideos.displaySize(album.width, album.height); // from the listing
+                return Media.missingVideo(size[0], size[1]);
+            }
+            return video;
+        }
+        byte[] data = network ? fetch(imageUrl) : cached(imageUrl);
+        if (data != null) return Media.image(data, imageUrl, album);
+        if (!network && album != null && album.width > 0 && album.height > 0) {
+            int[] size = outSize(album.width, album.height);
+            return Media.missing(size[0], size[1]);
+        }
+        return network ? null : Media.missing(0, 0);
+    }
+
+    /**
+     * load() with the network, on a loader thread; also decodes the image, and keeps its
+     * bytes on disk once they decode (a cut-off download doesn't).
+     */
+    private static Media loadDecoded(String url) {
+        Media media = load(url, true);
+        if (media == null || media.data == null) return media;
+        try {
+            InlineLoader.DECODES.acquire();
+            try {
+                media.decoded = toDrawable(media.data);
+            } finally {
+                InlineLoader.DECODES.release();
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        if (media.decoded != null) {
+            persist(media.imageUrl, media.data);
+        } else {
+            BYTES.remove(media.imageUrl);
+            Log.w(TAG, "image decode failed: " + media.imageUrl);
+            return null;
+        }
+        return media;
     }
 
     // ---- main thread: start/stop GIF animation for a bound TextView ------------
@@ -410,63 +831,102 @@ public final class InlineImages {
     // ---- imgur albums -----------------------------------------------------------
 
     /**
-     * The image URLs of an imgur album/gallery link, via the imgur API (rif's client ID),
-     * or null if the link isn't one or the album can't be listed (callers then fall back to
-     * the og:image cover). Network; background thread only.
+     * An imgur album/gallery link's items, via the imgur API (rif's client ID), or null if
+     * the link isn't one or the album can't be listed (callers then fall back to the
+     * og:image cover). Without [network], {@link Album#MISSING} if not cached.
      */
-    private static List<String> imgurAlbumImages(String url) {
-        if (url == null) return null;
+    private static Album imgurAlbum(String url, boolean network) {
         Matcher m = IMGUR_ALBUM.matcher(url);
         if (!m.matches()) return null;
-        List<String> cached = ALBUMS.get(url);
-        if (cached != null) return cached.isEmpty() ? null : cached;
+        Album cached = ALBUMS.get(url);
+        if (cached != null) return cached == Album.NONE ? null : cached;
+        String text = InlineCache.getText("album:" + url);
+        if (text != null && text.isEmpty()) { // known not listable
+            ALBUMS.put(url, Album.NONE);
+            return null;
+        }
+        Album stored = Album.parse(text);
+        if (stored != null) {
+            ALBUMS.put(url, stored);
+            return stored;
+        }
+        if (!network) return Album.MISSING;
 
         String id = m.group(2);
-        List<String> images = listImgurAlbum("https://api.imgur.com/3/album/" + id);
-        if (images == null && "gallery".equalsIgnoreCase(m.group(1))) {
-            images = listImgurAlbum("https://api.imgur.com/3/gallery/album/" + id);
+        Album album = listImgurAlbum("https://api.imgur.com/3/album/" + id);
+        if ((album == null || album == Album.NONE) && "gallery".equalsIgnoreCase(m.group(1))) {
+            Album gallery = listImgurAlbum("https://api.imgur.com/3/gallery/album/" + id);
+            if (gallery != null && gallery != Album.NONE) album = gallery;
+            else if (gallery == null) album = null; // a failed request: "none" isn't certain
+            // else: NONE only if both answered none (album stays null if it failed)
         }
-        ALBUMS.put(url, images == null ? Collections.<String>emptyList() : images);
-        return images;
+        ALBUMS.put(url, album == null ? Album.NONE : album);
+        if (album == Album.NONE) {
+            // imgur answered that it can't be listed: keep that too, for a day, so the link
+            // doesn't get a placeholder on every visit. (A failed request isn't kept.)
+            InlineCache.putText("album:" + url, "");
+        } else if (album != null) {
+            InlineCache.putText("album:" + url, album.serialize());
+        }
+        return album == Album.NONE ? null : album;
     }
 
-    private static List<String> listImgurAlbum(String apiUrl) {
+    /**
+     * Lists an album via the API: its items, Album.NONE if imgur answered that there are
+     * none (or no such album), or null if the request failed.
+     */
+    private static Album listImgurAlbum(String apiUrl) {
         try {
-            String json = fetchText(apiUrl, IMGUR_AUTH, "application/json", MAX_JSON_BYTES);
-            if (json == null) return null;
-            JSONArray items = new JSONObject(json).getJSONObject("data").optJSONArray("images");
-            if (items == null || items.length() == 0) return null;
+            TextResult result = fetchTextResult(apiUrl, IMGUR_AUTH, "application/json", MAX_JSON_BYTES);
+            if (result.body == null) return result.isGone() ? Album.NONE : null;
+            JSONArray items = new JSONObject(result.body).getJSONObject("data").optJSONArray("images");
+            if (items == null || items.length() == 0) return Album.NONE;
             List<String> urls = new ArrayList<>(items.length());
+            int firstW = 0, firstH = 0;
             for (int i = 0; i < items.length(); i++) {
                 JSONObject item = items.getJSONObject(i);
                 String id = item.optString("id", "");
                 String link = item.optString("link", "");
-                // Videos (mp4) can't be drawn in a span; imgur serves animated items as GIFs.
+                int w = item.optInt("width", 0), h = item.optInt("height", 0);
+                boolean thumbnail = false;
                 if (item.optString("type", "").startsWith("video/") && !id.isEmpty()) {
-                    link = "https://i.imgur.com/" + id + ".gif";
+                    // A video can't be drawn in a span. Alone in its album it is returned as
+                    // its mp4 (embed() plays it inline); among other items it gets imgur's
+                    // still frame (the .gif of an mp4 upload is just a still too, so this is
+                    // lighter).
+                    thumbnail = items.length() > 1;
+                    link = "https://i.imgur.com/" + id + (thumbnail ? "h.jpg" : ".mp4");
+                } else if (!item.optBoolean("animated", false) && w >= h && w > 1024 && !id.isEmpty()) {
+                    // A big still in landscape: imgur's 1024 px "huge thumbnail" is plenty
+                    // for a phone-wide image and a fraction of the download. (Portrait ones
+                    // would come out narrower than the screen.)
+                    thumbnail = true;
+                    link = "https://i.imgur.com/" + id + "h.jpg";
                 }
-                if (!link.isEmpty()) urls.add(link);
+                if (link.isEmpty()) continue;
+                if (urls.isEmpty() && w > 0 && h > 0) {
+                    // The thumbnail fits in 1024 x 1024.
+                    float scale = thumbnail ? Math.min(1f, 1024f / Math.max(w, h)) : 1f;
+                    firstW = Math.max(1, Math.round(w * scale));
+                    firstH = Math.max(1, Math.round(h * scale));
+                }
+                urls.add(link);
             }
-            return urls.isEmpty() ? null : Collections.unmodifiableList(urls);
+            return urls.isEmpty() ? Album.NONE : new Album(Collections.unmodifiableList(urls), firstW, firstH);
         } catch (Throwable t) {
             Log.w(TAG, "imgur album listing failed: " + apiUrl + " (" + t + ")");
             return null;
         }
     }
 
-    /** Sets an album image span plus its tap handler over [start, end). */
-    private static void setAlbumSpan(SpannableStringBuilder body, AlbumImageSpan album, int start, int end) {
-        body.setSpan(album, start, end, Spanned.SPAN_INCLUSIVE_EXCLUSIVE);
-        setImageClickSpan(body, album, album.link, start, end);
-    }
-
     /** Sets a tap handler for the inline [image] (which opens [link]) over [start, end). */
-    static void setImageClickSpan(SpannableStringBuilder body, ImageSpan image, URLSpan link,
-                                          int start, int end) {
+    static ImageClickSpan setImageClickSpan(SpannableStringBuilder body, ImageSpan image, URLSpan link,
+                                            int start, int end) {
         // Top priority so rif's movement method (which takes the first ClickableSpan under
         // the tap) picks this over a link span covering the same text.
-        body.setSpan(new ImageClickSpan(image, link), start, end,
-                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE | Spanned.SPAN_PRIORITY);
+        ImageClickSpan click = new ImageClickSpan(image, link);
+        body.setSpan(click, start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE | Spanned.SPAN_PRIORITY);
+        return click;
     }
 
     /**
@@ -784,6 +1244,8 @@ public final class InlineImages {
                 try {
                     byte[] data = fetch(url);
                     if (data != null) loaded = toDrawable(data);
+                    if (loaded != null) persist(url, data);
+                    else if (data != null) BYTES.remove(url);
                 } catch (Throwable ignored) {
                 }
                 final Drawable result = loaded;
@@ -837,7 +1299,7 @@ public final class InlineImages {
      * viewer) wherever it's tapped. An album image: left third = previous image, right
      * third = next, middle = open the album via its link.
      */
-    private static final class ImageClickSpan extends ClickableSpan {
+    static final class ImageClickSpan extends ClickableSpan {
         private final ImageSpan image;
         private final URLSpan link;
 
@@ -903,6 +1365,7 @@ public final class InlineImages {
     private static final Paint SCRIM = new Paint(Paint.ANTI_ALIAS_FLAG);
     private static final Paint ARROW = new Paint(Paint.ANTI_ALIAS_FLAG);
     private static final Paint BADGE_TEXT = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private static final Paint PLACEHOLDER = new Paint(Paint.ANTI_ALIAS_FLAG); // main thread
 
     static {
         SCRIM.setColor(0x99000000);
@@ -929,6 +1392,7 @@ public final class InlineImages {
         return bd;
     }
 
+    @android.annotation.TargetApi(28) // only called under an SDK_INT >= P check
     private static Drawable decodeAnimated(byte[] data) {
         try {
             ImageDecoder.Source src = ImageDecoder.createSource(ByteBuffer.wrap(data));
@@ -994,7 +1458,7 @@ public final class InlineImages {
 
     // ---- helpers ---------------------------------------------------------------
 
-    private static int targetWidth() {
+    static int targetWidth() {
         Resources res = Resources.getSystem();
         return Math.max(1, res.getDisplayMetrics().widthPixels - dp(res, 24));
     }
@@ -1034,32 +1498,43 @@ public final class InlineImages {
     /**
      * Maps a comment link to an image URL to embed, or null to leave it as a link.
      * Direct image links pass through; known media-host page links are resolved to
-     * their image via the page's og:image meta tag (with a small result cache).
+     * their image via the page's og:image meta tag (cached in memory and on disk).
+     * Without [network], {@link #MISSING_URL} if that would need fetching the page.
      */
-    private static String resolveImageUrl(String url) {
+    private static String resolveImageUrl(String url, boolean network) {
         if (url == null) return null;
-        if (isDirectImage(url)) return url;
-
-        // Giphy has a clean id -> animated-GIF URL mapping; prefer it over scraping.
-        String giphy = giphyGifUrl(url);
+        // Giphy has a clean id -> animated-WebP URL mapping; prefer it over scraping (and
+        // over a direct giphy.gif link: the WebP is a fraction of the size).
+        String giphy = giphyImageUrl(url);
         if (giphy != null) return giphy;
+
+        if (isDirectImage(url)) return url;
 
         if (!isResolvableHost(url)) return null;
 
         String cached = RESOLVED.get(url);
         if (cached != null) return cached.isEmpty() ? null : cached;
+        String stored = InlineCache.getText("og:" + url);
+        if (stored != null) { // "" = the page has no image
+            RESOLVED.put(url, stored);
+            return stored.isEmpty() ? null : stored;
+        }
+        if (!network) return MISSING_URL;
 
+        // "" = the page has no image (kept on disk for a day); null = the request failed
+        // (kept only in memory).
         String image = fetchOgImage(url);
         RESOLVED.put(url, image == null ? "" : image);
-        return image;
+        if (image != null) InlineCache.putText("og:" + url, image);
+        return image == null || image.isEmpty() ? null : image;
     }
 
     /**
-     * Maps a Giphy link to its animated-GIF media URL, or null if not Giphy. The id
+     * Maps a Giphy link to its animated-WebP media URL, or null if not Giphy. The id
      * is the last '-' segment of a /gifs/ slug, or the segment before /giphy.* on a
      * media host.
      */
-    private static String giphyGifUrl(String url) {
+    private static String giphyImageUrl(String url) {
         try {
             String u = url.toLowerCase(Locale.US);
             String id = null;
@@ -1079,7 +1554,7 @@ public final class InlineImages {
                 }
             }
             if (id == null || id.isEmpty() || !id.matches("[A-Za-z0-9]+")) return null;
-            return "https://media.giphy.com/media/" + id + "/giphy.gif";
+            return "https://media.giphy.com/media/" + id + "/giphy.webp";
         } catch (Throwable t) {
             return null;
         }
@@ -1108,17 +1583,20 @@ public final class InlineImages {
                 || u.contains("reddit.com/gallery/");
     }
 
+    /** The page's og:image; "" if it has none (or is gone); null if the request failed. */
     private static String fetchOgImage(String pageUrl) {
         try {
-            String html = fetchText(pageUrl);
-            if (html == null) return null;
+            // og tags live in <head>, so a truncated page is fine.
+            TextResult result = fetchTextResult(pageUrl, null, "text/html,application/xhtml+xml", MAX_HTML_BYTES);
+            if (result.body == null) return result.isGone() ? "" : null;
+            String html = result.body;
             Matcher m = OG_PROP_FIRST.matcher(html);
             if (!m.find()) {
                 m = OG_CONTENT_FIRST.matcher(html);
-                if (!m.find()) return null;
+                if (!m.find()) return "";
             }
             String image = decodeHtmlEntities(m.group(1));
-            if (image == null || image.isEmpty()) return null;
+            if (image == null || image.isEmpty()) return "";
             if (image.startsWith("//")) image = "https:" + image;
             return image;
         } catch (Throwable t) {
@@ -1126,13 +1604,56 @@ public final class InlineImages {
         }
     }
 
-    private static String fetchText(String url) {
-        // og tags live in <head>, so a truncated page is fine.
-        return fetchText(url, null, "text/html,application/xhtml+xml", MAX_HTML_BYTES);
+    /** A text GET's outcome: the body (HTTP 200), or null and the HTTP status (-1: none). */
+    private static final class TextResult {
+        final String body;
+        final int code;
+
+        TextResult(String body, int code) {
+            this.body = body;
+            this.code = code;
+        }
+
+        /** The server answered that it isn't there (as opposed to an error worth retrying). */
+        boolean isGone() {
+            return code == HttpURLConnection.HTTP_NOT_FOUND || code == HttpURLConnection.HTTP_GONE;
+        }
     }
 
-    /** GETs a text resource (truncated at maxBytes); null on any non-200 or error. */
+    /**
+     * GETs a text resource (truncated at maxBytes); null on any non-200 or error. A
+     * connection error is retried once.
+     */
     static String fetchText(String url, String authorization, String accept, int maxBytes) {
+        return fetchTextResult(url, authorization, accept, maxBytes).body;
+    }
+
+    private static TextResult fetchTextResult(String url, String authorization, String accept, int maxBytes) {
+        for (String attempt : attempts(url)) {
+            try {
+                return fetchTextOnce(attempt, authorization, accept, maxBytes);
+            } catch (IOException e) {
+                // next attempt
+            } catch (Throwable t) {
+                break;
+            }
+        }
+        return new TextResult(null, -1);
+    }
+
+    /**
+     * The URLs to try for [url], in order. http:// is tried as https:// first:
+     * HttpURLConnection doesn't follow a redirect from http to https, which is what image
+     * hosts answer plain http with (imgur: 301). If that fails to connect (e.g. a host
+     * without https), the original http URL is tried; otherwise the same URL once more.
+     */
+    private static String[] attempts(String url) {
+        if (url.regionMatches(true, 0, "http://", 0, 7)) return new String[]{"https://" + url.substring(7), url};
+        return new String[]{url, url};
+    }
+
+    private static TextResult fetchTextOnce(String url, String authorization, String accept, int maxBytes)
+            throws IOException {
         HttpURLConnection conn = null;
         try {
             conn = (HttpURLConnection) new URL(url).openConnection();
@@ -1145,7 +1666,7 @@ public final class InlineImages {
             int code = conn.getResponseCode();
             if (code != HttpURLConnection.HTTP_OK) {
                 if (authorization != null) Log.w(TAG, "api HTTP " + code + ": " + url);
-                return null;
+                return new TextResult(null, code);
             }
 
             InputStream in = conn.getInputStream();
@@ -1159,9 +1680,7 @@ public final class InlineImages {
                 if (total > maxBytes) break;
             }
             in.close();
-            return new String(out.toByteArray(), "UTF-8");
-        } catch (Throwable t) {
-            return null;
+            return new TextResult(new String(out.toByteArray(), "UTF-8"), code);
         } finally {
             if (conn != null) conn.disconnect();
         }
@@ -1176,17 +1695,60 @@ public final class InlineImages {
                 .replace("&#47;", "/");
     }
 
-    private static byte[] fetch(String url) {
-        byte[] cached = BYTES.get(url);
-        if (cached != null) return cached;
-        byte[] data = download(url);
-        // Downloads may exceed the cache size (up to MAX_DOWNLOAD_BYTES); putting such an
-        // entry would evict everything else and then itself, so skip caching big ones.
-        if (data != null && data.length <= BYTES.maxSize() / 4) BYTES.put(url, data);
+    /** An image's bytes from the memory or disk cache, or null. */
+    private static byte[] cached(String url) {
+        byte[] data = BYTES.get(url);
+        if (data != null) return data;
+        data = InlineCache.get("img:" + url);
+        if (data != null) remember(url, data);
         return data;
     }
 
+    /**
+     * An image's bytes: cached, or downloaded (kept in memory; on disk only once they
+     * decode, see persist()). Background thread only.
+     */
+    private static byte[] fetch(String url) {
+        byte[] cached = cached(url);
+        if (cached != null) return cached;
+        byte[] data = download(url);
+        if (data != null) remember(url, data);
+        return data;
+    }
+
+    /** Keeps image bytes that decoded on disk, unless they're there already. */
+    private static void persist(String url, byte[] data) {
+        if (url == null || data == null) return;
+        String key = "img:" + url;
+        if (!InlineCache.has(key)) InlineCache.put(key, data);
+    }
+
+    private static void remember(String url, byte[] data) {
+        // Downloads may exceed the cache size (up to MAX_DOWNLOAD_BYTES); putting such an
+        // entry would evict everything else and then itself, so big ones stay on disk only.
+        if (data.length <= BYTES.maxSize() / 4) BYTES.put(url, data);
+    }
+
+    /**
+     * Downloads an image; null on any non-200 or error. A connection error is retried once
+     * (see attempts()).
+     */
     private static byte[] download(String url) {
+        String[] attempts = attempts(url);
+        for (int i = 0; i < attempts.length; i++) {
+            try {
+                return downloadOnce(attempts[i]);
+            } catch (Throwable t) {
+                if (i == attempts.length - 1 || !(t instanceof IOException)) {
+                    Log.w(TAG, "image fetch error: " + attempts[i] + " (" + t + ")");
+                    return null;
+                }
+            }
+        }
+        return null;
+    }
+
+    private static byte[] downloadOnce(String url) throws IOException {
         HttpURLConnection conn = null;
         try {
             conn = (HttpURLConnection) new URL(url).openConnection();
@@ -1216,9 +1778,6 @@ public final class InlineImages {
             }
             in.close();
             return out.toByteArray();
-        } catch (Throwable t) {
-            Log.w(TAG, "image fetch error: " + url + " (" + t + ")");
-            return null;
         } finally {
             if (conn != null) conn.disconnect();
         }

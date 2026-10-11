@@ -91,19 +91,20 @@ internal fun ResourcePatchContext.addRevancedPreferenceCategory(
 }
 
 /**
- * Builds a default-on `<CheckBoxPreference>`, optionally with a [summary] line and greyed
- * out via [dependency].
+ * Builds a `<CheckBoxPreference>` (default-on unless [default] is false), optionally with a
+ * [summary] line and greyed out via [dependency].
  */
 internal fun Document.checkBoxPreference(
     key: String,
     title: String,
     dependency: String? = null,
     summary: String? = null,
+    default: Boolean = true,
 ): Element = createElement("CheckBoxPreference").apply {
     setAttribute("android:key", key)
     setAttribute("app:title", title)
     if (summary != null) setAttribute("app:summary", summary)
-    setAttribute("android:defaultValue", "true")
+    setAttribute("android:defaultValue", default.toString())
     if (dependency != null) setAttribute("android:dependency", dependency)
 }
 

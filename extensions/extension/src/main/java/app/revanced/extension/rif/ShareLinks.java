@@ -1,0 +1,349 @@
+package app.revanced.extension.rif;
+
+import android.app.Activity;
+import android.app.Application;
+import android.content.Context;
+import android.content.Intent;
+import android.net.Uri;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.util.Log;
+
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.regex.Pattern;
+
+/**
+ * "Fix share links": Reddit share links (reddit.com/r/{sub}/s/{code}) are resolved to the
+ * post's permalink before rif's link router sees them, so rif opens them like any other
+ * permalink instead of loading the share link in its in-app browser.
+ *
+ * Two hooks: {@link #intercept} at the top of rif's link router (taps inside rif), and
+ * {@link #interceptIntent} at the top of MainActivity's VIEW-intent dispatch (links from
+ * other apps).
+ */
+public final class ShareLinks {
+
+    private static final String TAG = "RifShareLinks";
+    /** Extra on the Intent we re-send unchanged when a link couldn't be resolved. */
+    private static final String BYPASS_EXTRA = "revanced_share_bypass";
+    private static final String UA =
+            "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36";
+    private static final int TIMEOUT_MS = 5000;
+    private static final int MAX_REQUESTS = 4;
+
+    // Codes are case-sensitive: never lowercase.
+    private static final Pattern SHARE_PATH = Pattern.compile("^/(r|u|user)/[^/]+/s/[A-Za-z0-9]+/?$");
+
+    private static final ExecutorService EXECUTOR = Executors.newFixedThreadPool(2, r -> {
+        Thread t = new Thread(r, "RifShareLinks");
+        t.setDaemon(true);
+        return t;
+    });
+    private static final Handler MAIN = new Handler(Looper.getMainLooper());
+
+    /** Resolved links, original URL to permalink. */
+    private static final Map<String, String> CACHE = new LinkedHashMap<String, String>(32, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, String> eldest) {
+            return size() > 32;
+        }
+    };
+    /** Links being resolved right now (a second tap on the same link is ignored). */
+    private static final Set<String> IN_FLIGHT = new HashSet<>();
+    /** While set, the router lets this link through untouched (rif's old behaviour). */
+    private static volatile String bypass;
+
+    private ShareLinks() {}
+
+    /**
+     * Stub the patch rewrites to call rif's router with the right parameter types; the
+     * parameters are rif's router parameters, passed as Objects so this compiles without
+     * rif's classes. Never called unpatched.
+     */
+    public static void route(String url, String p1, Object p2, String p3, String p4, boolean p5,
+                             Object p6, Object p7, Context p8, Object p9) {
+    }
+
+    /**
+     * Called first in the router. Returns true if the link was a share link and is now
+     * being handled here (resolve, then re-dispatch to the router).
+     */
+    public static boolean intercept(String url, String p1, Object p2, String p3, String p4, boolean p5,
+                                    Object p6, Object p7, Context ctx, Object p9) {
+        try {
+            if (url == null || url.equals(bypass) || !isShareLink(url, true)) return false;
+            if (ctx == null) {
+                ctx = Settings.context();
+                if (ctx == null) return false;
+            }
+            final Context context = ctx;
+
+            String cached;
+            synchronized (CACHE) {
+                cached = CACHE.get(url);
+            }
+            if (cached != null) {
+                dispatchLater(cached, url, p1, p2, p3, p4, p5, p6, p7, context, p9, false);
+                return true;
+            }
+            synchronized (IN_FLIGHT) {
+                if (!IN_FLIGHT.add(url)) return true; // double tap
+            }
+            EXECUTOR.execute(() -> {
+                String resolved = null;
+                try {
+                    resolved = resolve(url);
+                } catch (Throwable ignored) {
+                }
+                synchronized (IN_FLIGHT) {
+                    IN_FLIGHT.remove(url);
+                }
+                if (resolved != null) {
+                    synchronized (CACHE) {
+                        CACHE.put(url, resolved);
+                    }
+                }
+                dispatchLater(resolved != null ? resolved : url, url, p1, p2, p3, p4, p5, p6, p7, context, p9,
+                        resolved == null);
+            });
+            return true;
+        } catch (Throwable t) {
+            Log.w(TAG, "intercept failed", t);
+            return false;
+        }
+    }
+
+    private static void dispatchLater(String target, String original, String p1, Object p2, String p3,
+                                      String p4, boolean p5, Object p6, Object p7, Context ctx, Object p9,
+                                      boolean useBypass) {
+        MAIN.post(() -> {
+            if (ctx instanceof Activity) {
+                Activity a = (Activity) ctx;
+                if (a.isFinishing() || a.isDestroyed()) return;
+            }
+            // Unresolved: let the router handle the original as if we weren't here.
+            if (useBypass) bypass = original;
+            try {
+                try {
+                    route(target, p1, p2, p3, p4, p5, p6, p7, ctx, p9);
+                } catch (IllegalStateException e) {
+                    // The in-app browser commits a fragment, which fails after the activity
+                    // saved its state. With no FragmentManager rif starts MainActivity instead.
+                    route(target, p1, p2, p3, p4, p5, p6, null, ctx, p9);
+                }
+            } catch (Throwable t) {
+                Log.w(TAG, "route failed", t);
+            } finally {
+                bypass = null;
+            }
+        });
+    }
+
+    /**
+     * Called first in MainActivity.l1() (the VIEW-intent dispatcher). For a /r/.../s/... share
+     * link the activity is turned into a placeholder: its intent now points at the subreddit page
+     * and this returns false, so l1() runs normally and rif sets up its state (Back and
+     * onSaveInstanceState need it; returning early from l1 crashed them). The link resolves in the
+     * background, then a new MainActivity starts for the permalink and the placeholder finishes.
+     * A cached link skips the placeholder: that relaunch is synchronous.
+     */
+    public static boolean interceptIntent(final Activity activity) {
+        try {
+            final Intent intent = activity.getIntent();
+            if (intent == null || intent.getBooleanExtra(BYPASS_EXTRA, false)) return false;
+            Uri data = intent.getData();
+            if (data == null || !Intent.ACTION_VIEW.equals(intent.getAction())) return false;
+            final String url = data.toString();
+            // /u/ links go to UserPathDummyActivity, not here.
+            if (!isShareLink(url, false)) return false;
+
+            String cached;
+            synchronized (CACHE) {
+                cached = CACHE.get(url);
+            }
+            if (cached != null) {
+                relaunch(activity, intent, cached);
+                return true;
+            }
+            // Placeholder: show the subreddit while the lookup runs.
+            Intent shown = new Intent(intent);
+            shown.setData(Uri.parse("https://www.reddit.com/r/" + Uri.parse(url).getPathSegments().get(1)));
+            activity.setIntent(shown);
+
+            final Placeholder whenResumed = new Placeholder(activity, intent);
+            EXECUTOR.execute(() -> {
+                String resolved = null;
+                try {
+                    resolved = resolve(url);
+                } catch (Throwable ignored) {
+                }
+                if (resolved != null) {
+                    synchronized (CACHE) {
+                        CACHE.put(url, resolved);
+                    }
+                }
+                final String target = resolved;
+                MAIN.post(() -> whenResumed.done(target));
+            });
+            return false;
+        } catch (Throwable t) {
+            Log.w(TAG, "interceptIntent failed", t);
+            return false;
+        }
+    }
+
+    /**
+     * The placeholder activity waiting for its lookup. Android blocks activity starts from the
+     * background, so if the user left (Home, screen off) when the answer arrives, the relaunch
+     * waits until the activity is resumed again. Dropped if the activity finishes or is destroyed.
+     */
+    private static final class Placeholder implements Application.ActivityLifecycleCallbacks {
+        private final Activity activity;
+        private final Intent original;
+        private boolean resumed;
+        private boolean answered;
+        private String target;
+
+        Placeholder(Activity activity, Intent original) {
+            this.activity = activity;
+            this.original = original;
+            activity.getApplication().registerActivityLifecycleCallbacks(this);
+        }
+
+        /** Main thread. */
+        void done(String resolved) {
+            if (activity.isFinishing() || activity.isDestroyed()) {
+                stop();
+                return;
+            }
+            answered = true;
+            target = resolved;
+            if (resumed) go();
+        }
+
+        private void go() {
+            stop();
+            relaunch(activity, original, target);
+        }
+
+        private void stop() {
+            activity.getApplication().unregisterActivityLifecycleCallbacks(this);
+        }
+
+        @Override public void onActivityResumed(Activity a) {
+            if (a != activity) return;
+            resumed = true;
+            if (answered && !activity.isFinishing()) go();
+        }
+
+        @Override public void onActivityPaused(Activity a) {
+            if (a == activity) resumed = false;
+        }
+
+        @Override public void onActivityDestroyed(Activity a) {
+            if (a == activity) stop();
+        }
+
+        @Override public void onActivityCreated(Activity a, Bundle b) {}
+        @Override public void onActivityStarted(Activity a) {}
+        @Override public void onActivityStopped(Activity a) {}
+        @Override public void onActivitySaveInstanceState(Activity a, Bundle b) {}
+    }
+
+    /** Starts MainActivity on [resolved], or on the original link with the bypass extra if null. */
+    private static void relaunch(Activity activity, Intent original, String resolved) {
+        try {
+            Intent next = new Intent(original);
+            next.setComponent(activity.getComponentName());
+            // No flags from the caller: SINGLE_TOP would route this back into the finishing activity.
+            next.setFlags(0);
+            if (resolved != null) {
+                next.setData(Uri.parse(resolved));
+            } else {
+                next.putExtra(BYPASS_EXTRA, true);
+            }
+            activity.startActivity(next);
+            activity.overridePendingTransition(0, 0);
+        } catch (Throwable t) {
+            Log.w(TAG, "relaunch failed", t);
+        }
+        activity.finish();
+    }
+
+    // ---- link handling ----
+
+    private static boolean isShareLink(String url, boolean allowUser) {
+        Uri u = Uri.parse(url);
+        String scheme = u.getScheme();
+        if (!"https".equalsIgnoreCase(scheme) && !"http".equalsIgnoreCase(scheme)) return false;
+        if (!isReddit(u.getHost())) return false;
+        String path = u.getPath();
+        if (path == null || !SHARE_PATH.matcher(path).matches()) return false;
+        return allowUser || path.startsWith("/r/");
+    }
+
+    private static boolean isReddit(String host) {
+        if (host == null) return false;
+        host = host.toLowerCase();
+        return host.equals("reddit.com") || host.endsWith(".reddit.com");
+    }
+
+    /** old./np./m./... pages differ from www (old. redirects to a login wall). */
+    private static String toWww(String url) {
+        return Uri.parse(url).buildUpon().scheme("https").authority("www.reddit.com").build().toString();
+    }
+
+    /** Follows the share link's redirects; returns the permalink or null if anything is off. */
+    private static String resolve(String url) {
+        String current = toWww(url);
+        for (int i = 0; i < MAX_REQUESTS; i++) {
+            HttpURLConnection c = null;
+            try {
+                c = (HttpURLConnection) new URL(current).openConnection();
+                c.setRequestMethod("HEAD");
+                c.setInstanceFollowRedirects(false);
+                c.setConnectTimeout(TIMEOUT_MS);
+                c.setReadTimeout(TIMEOUT_MS);
+                c.setRequestProperty("User-Agent", UA);
+                int code = c.getResponseCode();
+                if (code != 301 && code != 302 && code != 303 && code != 307 && code != 308) return null;
+                String location = c.getHeaderField("Location");
+                if (location == null) return null;
+                URL next = new URL(new URL(current), location);
+                if (!isReddit(next.getHost())) return null;
+                String path = next.getPath();
+                if (path == null || path.startsWith("/login")) return null;
+                String nextUrl = next.toString();
+                if (isShareLink(nextUrl, true)) {
+                    current = toWww(nextUrl);
+                    continue;
+                }
+                return clean(nextUrl);
+            } catch (Throwable t) {
+                return null;
+            } finally {
+                if (c != null) c.disconnect();
+            }
+        }
+        return null;
+    }
+
+    /** Drops share_id and utm_* tracking parameters, keeps the rest (e.g. context). */
+    private static String clean(String url) {
+        Uri u = Uri.parse(url);
+        Uri.Builder b = u.buildUpon().clearQuery().fragment(null);
+        for (String name : u.getQueryParameterNames()) {
+            if (name.equals("share_id") || name.startsWith("utm_")) continue;
+            for (String value : u.getQueryParameters(name)) b.appendQueryParameter(name, value);
+        }
+        return b.build().toString();
+    }
+}
