@@ -1,7 +1,7 @@
 {
-  "created_at": "2026-10-11T01:54:03",
-  "description": "Test build, not a release. For stable builds use main/bundles/stable.json.\n\nYouTube player fixes:\n- Captions come back after turning them off and on again.\n- Bigger captions in portrait (landscape unchanged).\n- Controls stay clear of rounded screen corners.\n- One loading spinner instead of two.\n- At the end of a video, only the replay button shows; tap to replay.\n- The screen stays on while a video plays.\n",
-  "download_url": "https://raw.githubusercontent.com/MojiRS/revanced-rif-patches/test-builds/patches-1.7.0-dev4.rvp",
+  "created_at": "2026-10-11T05:38:31",
+  "description": "Test build, not a release. For stable builds use main/bundles/stable.json.\n\nInline media loads faster:\n- Comments no longer wait for other comments' images or videos. A placeholder box shows until the media arrives.\n- Media is cached on disk, so threads you've already opened show it straight away, even after restarting the app.\n- Smaller downloads for Giphy and large imgur album images.\n- http:// image links now load.\n",
+  "download_url": "https://raw.githubusercontent.com/MojiRS/revanced-rif-patches/test-builds/patches-1.7.0-dev5.rvp",
   "signature_download_url": "N/A",
-  "version": "v1.7.0-dev4"
+  "version": "v1.7.0-dev5"
 }
