@@ -10,6 +10,8 @@ import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
 
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.HashSet;
@@ -38,6 +40,12 @@ public final class ShareLinks {
             "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36";
     private static final int TIMEOUT_MS = 5000;
     private static final int MAX_REQUESTS = 4;
+    /** Overall cap for the placeholder's lookup, then the original link opens as rif would. */
+    private static final long DEADLINE_MS = 6000;
+    /** When the placeholder's own back stack is read as the "nothing navigated yet" baseline. */
+    private static final long BASELINE_DELAY_MS = 800;
+    /** How long a placeholder waits for the recreated MainActivity after a config change. */
+    private static final long ADOPT_MS = 5000;
 
     // Codes are case-sensitive: never lowercase.
     private static final Pattern SHARE_PATH = Pattern.compile("^/(r|u|user)/[^/]+/s/[A-Za-z0-9]+/?$");
@@ -179,10 +187,11 @@ public final class ShareLinks {
             activity.setIntent(shown);
 
             final Placeholder whenResumed = new Placeholder(activity, intent);
+            final long deadline = System.nanoTime() + DEADLINE_MS * 1_000_000L;
             EXECUTOR.execute(() -> {
                 String resolved = null;
                 try {
-                    resolved = resolve(url);
+                    resolved = resolve(url, deadline);
                 } catch (Throwable ignored) {
                 }
                 if (resolved != null) {
@@ -200,48 +209,118 @@ public final class ShareLinks {
         }
     }
 
+    // FragmentManager's back stack count by reflection (rif's copy is obfuscated, the class name
+    // isn't). Unknown (-1) disables the "user navigated" check.
+    private static Method getFragmentManager;
+    private static Method getBackStackCount;
+
+    private static int backStackCount(Activity a) {
+        try {
+            if (getFragmentManager == null) {
+                Method found = null;
+                for (Method m : a.getClass().getMethods()) {
+                    if (m.getParameterTypes().length == 0
+                            && m.getReturnType().getName().equals("androidx.fragment.app.FragmentManager")) {
+                        if (found != null) return -1;
+                        found = m;
+                    }
+                }
+                if (found == null) return -1;
+                getFragmentManager = found;
+            }
+            Object fm = getFragmentManager.invoke(a);
+            if (fm == null) return -1;
+            if (getBackStackCount == null) {
+                Method found = null;
+                for (Method m : fm.getClass().getMethods()) {
+                    if (m.getDeclaringClass().getName().equals("androidx.fragment.app.FragmentManager")
+                            && m.getParameterTypes().length == 0 && m.getReturnType() == int.class
+                            && !Modifier.isStatic(m.getModifiers())) {
+                        if (found != null) return -1;
+                        found = m;
+                    }
+                }
+                if (found == null) return -1;
+                getBackStackCount = found;
+            }
+            return (Integer) getBackStackCount.invoke(fm);
+        } catch (Throwable t) {
+            return -1;
+        }
+    }
+
     /**
      * The placeholder activity waiting for its lookup. Android blocks activity starts from the
      * background, so if the user left (Home, screen off) when the answer arrives, the relaunch
-     * waits until the activity is resumed again. Dropped if the activity finishes or is destroyed.
+     * waits until the activity is resumed again. Dropped if the activity finishes or is destroyed,
+     * except when it is destroyed for a configuration change (dark mode, locale, font scale, rif's
+     * own recreate): then the next MainActivity is adopted. The wait is capped by DEADLINE_MS (then
+     * the original link opens as rif would have), and nothing happens if the user has navigated in
+     * the placeholder meanwhile (its back stack grew). A process death loses the link (accepted).
      */
     private static final class Placeholder implements Application.ActivityLifecycleCallbacks {
-        private final Activity activity;
+        private Activity activity; // null while waiting for the recreated instance
+        private final Application app;
+        private final Class<?> activityClass;
         private final Intent original;
         private boolean resumed;
         private boolean answered;
+        private boolean stopped;
         private String target;
+        private int baseline = -1;
+
+        private final Runnable onDeadline = () -> done(null);
+        private final Runnable onBaseline = () -> {
+            if (activity != null && !stopped) baseline = backStackCount(activity);
+        };
+        private final Runnable onNotAdopted = () -> {
+            if (activity == null) stop();
+        };
 
         Placeholder(Activity activity, Intent original) {
             this.activity = activity;
+            this.app = activity.getApplication();
+            this.activityClass = activity.getClass();
             this.original = original;
-            activity.getApplication().registerActivityLifecycleCallbacks(this);
+            app.registerActivityLifecycleCallbacks(this);
+            // l1 and its first fragment commit have finished by then.
+            MAIN.postDelayed(onBaseline, BASELINE_DELAY_MS);
+            MAIN.postDelayed(onDeadline, DEADLINE_MS);
         }
 
         /** Main thread. */
         void done(String resolved) {
+            if (stopped || answered) return;
+            answered = true;
+            target = resolved;
+            if (activity == null) return; // the adopted instance continues
             if (activity.isFinishing() || activity.isDestroyed()) {
                 stop();
                 return;
             }
-            answered = true;
-            target = resolved;
             if (resumed) go();
         }
 
         private void go() {
+            Activity a = activity;
             stop();
-            relaunch(activity, original, target);
+            if (baseline >= 0 && backStackCount(a) > baseline) return; // the user is browsing
+            relaunch(a, original, target);
         }
 
         private void stop() {
-            activity.getApplication().unregisterActivityLifecycleCallbacks(this);
+            if (stopped) return;
+            stopped = true;
+            MAIN.removeCallbacks(onDeadline);
+            MAIN.removeCallbacks(onBaseline);
+            MAIN.removeCallbacks(onNotAdopted);
+            app.unregisterActivityLifecycleCallbacks(this);
         }
 
         @Override public void onActivityResumed(Activity a) {
-            if (a != activity) return;
+            if (stopped || a != activity) return;
             resumed = true;
-            if (answered && !activity.isFinishing()) go();
+            if (answered && !a.isFinishing()) go();
         }
 
         @Override public void onActivityPaused(Activity a) {
@@ -249,10 +328,25 @@ public final class ShareLinks {
         }
 
         @Override public void onActivityDestroyed(Activity a) {
-            if (a == activity) stop();
+            if (stopped || a != activity) return;
+            if (a.isChangingConfigurations()) {
+                // Keep waiting: the next MainActivity (restored from saved state) takes over.
+                activity = null;
+                resumed = false;
+                MAIN.postDelayed(onNotAdopted, ADOPT_MS);
+            } else {
+                stop();
+            }
         }
 
-        @Override public void onActivityCreated(Activity a, Bundle b) {}
+        @Override public void onActivityCreated(Activity a, Bundle b) {
+            if (stopped || activity != null || a.getClass() != activityClass) return;
+            MAIN.removeCallbacks(onNotAdopted);
+            activity = a;
+            baseline = -1;
+            MAIN.postDelayed(onBaseline, BASELINE_DELAY_MS);
+        }
+
         @Override public void onActivityStarted(Activity a) {}
         @Override public void onActivityStopped(Activity a) {}
         @Override public void onActivitySaveInstanceState(Activity a, Bundle b) {}
@@ -303,15 +397,26 @@ public final class ShareLinks {
 
     /** Follows the share link's redirects; returns the permalink or null if anything is off. */
     private static String resolve(String url) {
+        return resolve(url, 0);
+    }
+
+    /** As above, giving up at deadline (a System.nanoTime() value; 0 = no overall limit). */
+    private static String resolve(String url, long deadline) {
         String current = toWww(url);
         for (int i = 0; i < MAX_REQUESTS; i++) {
+            int timeout = TIMEOUT_MS;
+            if (deadline != 0) {
+                long left = (deadline - System.nanoTime()) / 1_000_000L;
+                if (left <= 0) return null;
+                timeout = (int) Math.min(TIMEOUT_MS, left);
+            }
             HttpURLConnection c = null;
             try {
                 c = (HttpURLConnection) new URL(current).openConnection();
                 c.setRequestMethod("HEAD");
                 c.setInstanceFollowRedirects(false);
-                c.setConnectTimeout(TIMEOUT_MS);
-                c.setReadTimeout(TIMEOUT_MS);
+                c.setConnectTimeout(timeout);
+                c.setReadTimeout(timeout);
                 c.setRequestProperty("User-Agent", UA);
                 int code = c.getResponseCode();
                 if (code != 301 && code != 302 && code != 303 && code != 307 && code != 308) return null;

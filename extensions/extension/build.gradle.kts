@@ -11,8 +11,11 @@ android {
         minSdk = 21
     }
 
+    // Fail the build on platform APIs newer than minSdk without a version guard: the
+    // extension runs inside rif on Android 5+, but testing happens on new devices only.
     lint {
-        abortOnError = false
+        checkOnly += setOf("NewApi", "InlinedApi")
+        abortOnError = true
     }
 }
 
