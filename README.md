@@ -18,6 +18,8 @@ A bundle is a container for many small, independently-toggleable patches. Option
 
 For how each patch works and its settings, see [PATCHES.md](PATCHES.md).
 
+**Galleries or "load more comments" not working?** Since October 2026, Reddit blocks the requests rif uses for them. Patch with [revanced-rif-fixes](https://github.com/notBrian2/revanced-rif-fixes) by notBrian2 alongside this bundle: it fixes both, plus Redgifs and more imgur albums.
+
 ## Use with ReVanced Manager
 
 1. In ReVanced Manager, go to **Settings → Patch bundles → Add (+)** and add this as a remote source:
@@ -31,7 +33,8 @@ For how each patch works and its settings, see [PATCHES.md](PATCHES.md).
    (Manager needs this JSON link; a link to the `.rvp` itself doesn't work as a remote source. You can also download `patches.rvp` from [Releases](https://github.com/MojiRS/revanced-rif-patches/releases) and add it as a local file.)
 2. Patch **rif is fun 5.6.22** (free or golden platinum; its final release, and the only version these patches support), selecting:
    - the official ReVanced bundle's **Spoof client** patch — rif can't load anything from Reddit without it (its default options work), and
-   - whichever patches from this bundle you want.
+   - whichever patches from this bundle you want, and
+   - the patches from [revanced-rif-fixes](https://github.com/notBrian2/revanced-rif-fixes), added to Manager the same way, for galleries and "load more comments".
 
 ## Building from source
 
