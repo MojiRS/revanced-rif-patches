@@ -86,3 +86,13 @@ Reddit's "Share" button now produces links like `reddit.com/r/sub/s/AbC123`. rif
 No settings.
 
 How it works: a hook at the top of rif's link router resolves `/r|u|user/{sub}/s/{code}` links on a background thread (HEAD request, redirects followed by hand, tracking parameters removed) and calls the router again on the main thread with the result. A second hook at the start of `MainActivity`'s VIEW-intent handling does the same for `/r/` links from other apps, then starts a fresh `MainActivity` on the post and finishes the blank one.
+
+## Repair broken gallery images
+
+Shows the images of Reddit galleries that fail to load with "Error loading gallery" because Reddit marks some of their images as failed.
+
+For some galleries Reddit sends `{"status":"failed"}` with no size for every image, and rif rejects the whole gallery when any image has no size. The images themselves are still on `i.redd.it`. This patch finds each failed image there (a quick lookup per file type, the last type that worked first), gives rif a normal entry for it, and drops images that can't be found. A gallery with nothing wrong is not touched and makes no lookups. If no image can be found, rif shows its usual error.
+
+No settings.
+
+How it works: a hook at the start of rif's gallery response parser (which runs on a background thread) reads the JSON, and for a gallery with an image that has neither a source size nor a preview, rewrites it before rif parses it. Any failure hands rif the original response.

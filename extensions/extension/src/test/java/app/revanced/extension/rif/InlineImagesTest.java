@@ -73,6 +73,15 @@ public class InlineImagesTest {
     }
 
     @Test
+    public void imgflipPagesAreResolvedButTemplatesAreNot() {
+        assertTrue(InlineImages.isResolvableHost("https://imgflip.com/i/7ope63"));
+        assertTrue(InlineImages.isResolvableHost("https://www.imgflip.com/i/7ope63"));
+        assertTrue(InlineImages.isResolvableHost("https://imgflip.com/gif/b250fo"));
+        assertFalse(InlineImages.isResolvableHost("https://imgflip.com/meme/Drake-Hotline-Bling"));
+        assertFalse(InlineImages.isResolvableHost("https://imgflip.com/memegenerator"));
+    }
+
+    @Test
     public void htmlEntitiesInUrlsAreDecoded() {
         assertEquals("https://x/a?b=1&c=2/3", InlineImages.decodeHtmlEntities("https://x/a?b=1&amp;c=2&#x2F;3"));
         assertNull(InlineImages.decodeHtmlEntities(null));

@@ -1573,7 +1573,7 @@ public final class InlineImages {
         return best;
     }
 
-    private static boolean isResolvableHost(String url) {
+    static boolean isResolvableHost(String url) {
         String u = url.toLowerCase(Locale.US);
         return u.startsWith("https://imgur.com/")
                 || u.startsWith("https://www.imgur.com/")
@@ -1582,6 +1582,10 @@ public final class InlineImages {
                 || u.startsWith("https://www.redgifs.com/")
                 || u.startsWith("https://gfycat.com/")
                 || u.startsWith("https://www.gfycat.com/")
+                || u.startsWith("https://imgflip.com/i/")
+                || u.startsWith("https://www.imgflip.com/i/")
+                || u.startsWith("https://imgflip.com/gif/")
+                || u.startsWith("https://www.imgflip.com/gif/")
                 || u.contains("giphy.com/")
                 || u.contains("tenor.com/view/")
                 || u.contains("reddit.com/gallery/")

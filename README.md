@@ -15,6 +15,7 @@ A bundle is a container for many small, independently-toggleable patches. Option
 | **Fix YouTube videos** | Fixes the built-in YouTube player. |
 | **YouTube player controls** | Double-tap to seek, hold for 2x speed, and speed and captions controls in the YouTube player. |
 | **Fix share links** | Opens Reddit share links (reddit.com/r/…/s/…) directly in rif instead of bouncing through the browser, and fixes reddit.com/media image links. |
+| **Repair broken gallery images** | Shows the images of Reddit galleries that fail to load with "Error loading gallery" because Reddit marks some of their images as failed. |
 
 For how each patch works and its settings, see [PATCHES.md](PATCHES.md).
 
