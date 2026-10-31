@@ -1,7 +1,7 @@
 {
-  "created_at": "2026-10-31T19:44:00",
-  "description": "Test build, not a release. For stable builds use main/bundles/stable.json.\n\n1.7.1-rc1\n- Fix: reddit.com/media image links in comments open the image, not an unrelated r/funny post.\n- Test: tap such a link in a comment (e.g. in the r/neoliberal Discussion Thread) and check the image opens and Back returns to the thread. Ordinary share links (/s/...) should still open as before.\n",
-  "download_url": "https://raw.githubusercontent.com/MojiRS/revanced-rif-patches/test-builds/patches-1.7.1-rc1.rvp",
+  "created_at": "2026-10-31T20:09:39",
+  "description": "Test build, not a release. For stable builds use main/bundles/stable.json.\n\n1.7.1-rc2\n- Inline images now also show reddit.com/media?url=... links in comments (Reddit-hosted images only); tapping still opens the image.\n- Test: open a comment with such a link, with Inline images on and off.\n",
+  "download_url": "https://raw.githubusercontent.com/MojiRS/revanced-rif-patches/test-builds/patches-1.7.1-rc2.rvp",
   "signature_download_url": "N/A",
-  "version": "v1.7.1-rc1"
+  "version": "v1.7.1-rc2"
 }
