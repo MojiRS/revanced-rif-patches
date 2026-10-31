@@ -79,6 +79,8 @@ Opens Reddit share links (reddit.com/r/…/s/…) directly in rif instead of bou
 
 `reddit.com/media?url=…` links wrap an image. rif mistakes them for a link to the post with the id `media`, an unrelated r/funny post, so the image never opens. This patch opens the wrapped link instead.
 
+`matrix.redditspace.com/_matrix/media/…` image links have no file extension, so rif opens them in its browser, where Reddit's redirects can end at the same r/funny post. This patch looks up the image behind the link and opens that. With Inline comment images on, these links show inline too.
+
 Reddit's "Share" button now produces links like `reddit.com/r/sub/s/AbC123`. rif doesn't recognise them as Reddit links, so it opens them in its in-app browser; Reddit redirects that to the post, which rif then opens as a second screen on top of a blank browser, so Back lands on the blank page. This patch looks up where a share link points (a quick lookup, remembered while rif runs) and gives rif the post's address instead, so it opens like any other post and Back returns to where you were. It covers links tapped inside rif and links opened from other apps. `np.` and `old.` links work too. If a link can't be resolved (offline, Reddit refuses), rif behaves as it did before.
 
 No settings.
