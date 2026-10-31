@@ -4,7 +4,6 @@ import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
-import static org.junit.Assume.assumeTrue;
 
 import org.json.JSONObject;
 import org.junit.Before;
@@ -16,21 +15,14 @@ import java.util.List;
 
 /**
  * JVM tests for {@link GalleryRepair}'s JSON logic with a fake probe. They need a real org.json,
- * which the Android stubs on the unit-test classpath are not (they return defaults): without
- * one every test is skipped.
+ * which the Android stubs on the unit-test classpath are not (they return defaults): the
+ * build adds org.json:json as a test dependency, so they run, and fail if it is missing.
  */
 public class GalleryRepairTest {
     private static final Charset UTF_8 = Charset.forName("UTF-8");
 
     @Before
-    public void needsRealJson() throws Exception {
-        boolean works;
-        try {
-            works = new JSONObject("{\"a\":1}").optInt("a", 0) == 1;
-        } catch (Throwable t) {
-            works = false;
-        }
-        assumeTrue("org.json is a stub on this classpath", works);
+    public void reset() {
         GalleryRepair.forgetLastHit();
     }
 

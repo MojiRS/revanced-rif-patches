@@ -30,6 +30,10 @@ dependencies {
     compileOnly(files("libs/rif-stubs.jar"))
 
     testImplementation("junit:junit:4.13.2")
+    // A real org.json for GalleryRepairTest: the Android stub jar on the unit-test classpath
+    // returns defaults. Test-only, so never bundled. It wins over the stub on the test
+    // classpath: GalleryRepairTest runs all 9 tests and none are skipped.
+    testImplementation("org.json:json:20240303")
 }
 
 // The extension plugin applies Kotlin, which implicitly puts kotlin-stdlib on the runtime
