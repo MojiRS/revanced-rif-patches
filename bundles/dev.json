@@ -1,7 +1,7 @@
 {
-  "created_at": "2026-10-31T21:48:57",
-  "description": "Test build, not a release. For stable builds use main/bundles/stable.json.\n\nRelease candidate for 1.7.2.\n- matrix.redditspace.com image links open in rif's image viewer and show as inline comment images.\nTest on free and Platinum: see the phone test sheet.\n",
-  "download_url": "https://raw.githubusercontent.com/MojiRS/revanced-rif-patches/test-builds/patches-1.7.2-rc1.rvp",
+  "created_at": "2026-10-31T22:58:05",
+  "description": "Test build, not a release. For stable builds use main/bundles/stable.json.\n\n1.7.2-dev2 (test build)\n\n- New patch: Repair broken gallery images. Reddit galleries that showed \"Error loading gallery\" because Reddit marked their images as failed now load.\n- Inline comment images: imgflip.com/i/ and /gif/ links now show inline.\n",
+  "download_url": "https://raw.githubusercontent.com/MojiRS/revanced-rif-patches/test-builds/patches-1.7.2-dev2.rvp",
   "signature_download_url": "N/A",
-  "version": "v1.7.2-rc1"
+  "version": "v1.7.2-dev2"
 }
