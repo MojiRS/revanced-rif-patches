@@ -70,7 +70,7 @@ private val mainActivityIntentFingerprint = fingerprint {
 val fixShareLinksPatch = bytecodePatch(
     name = "Fix share links",
     description = "Opens Reddit share links (reddit.com/r/…/s/…) directly in rif instead of bouncing " +
-        "through the browser.",
+        "through the browser, and fixes reddit.com/media image links.",
 ) {
     compatibleWith(*RIF_COMPATIBILITY)
     // A widget can hand the router a null Context; the extension falls back to the app's.

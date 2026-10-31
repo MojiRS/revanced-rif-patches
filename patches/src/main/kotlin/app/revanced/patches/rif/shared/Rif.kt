@@ -36,7 +36,7 @@ internal val RIF_COMPATIBILITY: Array<Pair<String, Set<String>>> =
 /**
  * Obfuscated names that differ between the free and Platinum builds of rif 5.6.22.
  * rif's own class names survive R8 in both, but members and the obfuscated helper
- * packages are renamed independently (see SYMBOL-MAP.md in the workspace).
+ * packages are renamed independently, so every symbol that differs is listed here.
  * Fingerprints match a symbol set as a unit, so one bundle patches either app.
  * Verified that no build contains the other build's names at these locations.
  */

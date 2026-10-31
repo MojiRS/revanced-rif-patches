@@ -81,18 +81,25 @@ public final class ShareLinks {
     }
 
     /**
-     * Called first in the router. Returns true if the link was a share link and is now
-     * being handled here (resolve, then re-dispatch to the router).
+     * Called first in the router. Returns true if the link was a share link or media link and
+     * is now being handled here (resolve or unwrap, then re-dispatch to the router).
      */
     public static boolean intercept(String url, String p1, Object p2, String p3, String p4, boolean p5,
                                     Object p6, Object p7, Context ctx, Object p9) {
         try {
-            if (url == null || url.equals(bypass) || !isShareLink(url, true)) return false;
+            if (url == null || url.equals(bypass)) return false;
+            String media = mediaTarget(url);
+            if (media == null && !isShareLink(url, true)) return false;
             if (ctx == null) {
                 ctx = Settings.context();
                 if (ctx == null) return false;
             }
             final Context context = ctx;
+
+            if (media != null) {
+                dispatchLater(media, url, p1, p2, p3, p4, p5, p6, p7, context, p9, false);
+                return true;
+            }
 
             String cached;
             synchronized (CACHE) {
@@ -384,10 +391,38 @@ public final class ShareLinks {
         return allowUser || path.startsWith("/r/");
     }
 
+    /**
+     * The link inside a reddit.com/media?url=... wrapper, or null if [url] isn't one. rif reads
+     * /media as a short link to the post with id "media" (a real r/funny post, "nice hat").
+     * No /media intent filter exists, so these reach us only through the router; rif's WebViews
+     * classify links themselves and skip it. Only Reddit-hosted targets are unwrapped: others
+     * keep rif's behaviour.
+     */
+    static String mediaTarget(String url) {
+        Uri u = Uri.parse(url);
+        String scheme = u.getScheme();
+        if (!"https".equalsIgnoreCase(scheme) && !"http".equalsIgnoreCase(scheme)) return null;
+        if (!isReddit(u.getHost())) return null;
+        String path = u.getPath();
+        if (!"/media".equals(path) && !"/media/".equals(path)) return null;
+        String target = u.getQueryParameter("url");
+        if (target == null) return null;
+        Uri t = Uri.parse(target);
+        String targetScheme = t.getScheme();
+        if (!"https".equalsIgnoreCase(targetScheme) && !"http".equalsIgnoreCase(targetScheme)) return null;
+        return isRedditMedia(t.getHost()) ? target : null;
+    }
+
     private static boolean isReddit(String host) {
         if (host == null) return false;
         host = host.toLowerCase();
         return host.equals("reddit.com") || host.endsWith(".reddit.com");
+    }
+
+    private static boolean isRedditMedia(String host) {
+        if (host == null) return false;
+        host = host.toLowerCase();
+        return host.equals("redd.it") || host.endsWith(".redd.it");
     }
 
     /** old./np./m./... pages differ from www (old. redirects to a login wall). */

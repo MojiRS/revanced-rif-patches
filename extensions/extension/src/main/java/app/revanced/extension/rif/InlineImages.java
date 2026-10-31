@@ -648,6 +648,9 @@ public final class InlineImages {
      */
     static Media load(String url, boolean network) {
         if (url == null) return null;
+        // A reddit.com/media?url=... wrapper shows what it wraps.
+        String wrapped = ShareLinks.mediaTarget(url);
+        if (wrapped != null) url = wrapped;
         // Video links (comment videos, v.redd.it, imgur gifv/mp4) are InlineVideos'.
         if (InlineVideos.isVideoLink(url)) return InlineVideos.load(url, network);
         // imgur albums are listed via the API (so multi-image albums can be cycled inline).
@@ -1480,7 +1483,7 @@ public final class InlineImages {
                 && data[8] == 'W' && data[9] == 'E' && data[10] == 'B' && data[11] == 'P';
     }
 
-    private static boolean isDirectImage(String url) {
+    static boolean isDirectImage(String url) {
         if (url == null) return false;
         String u = url.toLowerCase(Locale.US);
         int cut = u.indexOf('?');
@@ -1534,7 +1537,7 @@ public final class InlineImages {
      * is the last '-' segment of a /gifs/ slug, or the segment before /giphy.* on a
      * media host.
      */
-    private static String giphyImageUrl(String url) {
+    static String giphyImageUrl(String url) {
         try {
             String u = url.toLowerCase(Locale.US);
             String id = null;
@@ -1647,7 +1650,7 @@ public final class InlineImages {
      * hosts answer plain http with (imgur: 301). If that fails to connect (e.g. a host
      * without https), the original http URL is tried; otherwise the same URL once more.
      */
-    private static String[] attempts(String url) {
+    static String[] attempts(String url) {
         if (url.regionMatches(true, 0, "http://", 0, 7)) return new String[]{"https://" + url.substring(7), url};
         return new String[]{url, url};
     }
@@ -1686,7 +1689,7 @@ public final class InlineImages {
         }
     }
 
-    private static String decodeHtmlEntities(String s) {
+    static String decodeHtmlEntities(String s) {
         if (s == null) return null;
         return s.replace("&amp;", "&")
                 .replace("&#38;", "&")

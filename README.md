@@ -14,7 +14,7 @@ A bundle is a container for many small, independently-toggleable patches. Option
 | **Fix imgur albums** | Fixes imgur albums crashing or failing to load when patched alongside the official ReVanced rif patches. |
 | **Fix YouTube videos** | Fixes the built-in YouTube player. |
 | **YouTube player controls** | Double-tap to seek, hold for 2x speed, and speed and captions controls in the YouTube player. |
-| **Fix share links** | Opens Reddit share links (reddit.com/r/…/s/…) directly in rif instead of bouncing through the browser. |
+| **Fix share links** | Opens Reddit share links (reddit.com/r/…/s/…) directly in rif instead of bouncing through the browser, and fixes reddit.com/media image links. |
 
 For how each patch works and its settings, see [PATCHES.md](PATCHES.md).
 

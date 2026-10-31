@@ -17,12 +17,19 @@ android {
         checkOnly += setOf("NewApi", "InlinedApi")
         abortOnError = true
     }
+
+    // JVM unit tests for the pure helpers: Android stubs return defaults instead of throwing.
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 dependencies {
     // Compile-only stub of rif's RifBaseSettingsFragment (source: stubs/); provided by
     // rif at runtime, so it must never be bundled.
     compileOnly(files("libs/rif-stubs.jar"))
+
+    testImplementation("junit:junit:4.13.2")
 }
 
 // The extension plugin applies Kotlin, which implicitly puts kotlin-stdlib on the runtime
