@@ -50,6 +50,11 @@ public final class ShareLinks {
     // Codes are case-sensitive: never lowercase.
     private static final Pattern SHARE_PATH = Pattern.compile("^/(r|u|user)/[^/]+/s/[A-Za-z0-9]+/?$");
 
+    // Reddit's Matrix media links; the id redirects to its i.redd.it image.
+    private static final Pattern MATRIX_MEDIA = Pattern.compile(
+            "^https?://matrix\\.redditspace\\.com/_matrix/media/v\\d+/download/reddit\\.com/[A-Za-z0-9]+/?(\\?.*)?$",
+            Pattern.CASE_INSENSITIVE);
+
     private static final ExecutorService EXECUTOR = Executors.newFixedThreadPool(2, r -> {
         Thread t = new Thread(r, "RifShareLinks");
         t.setDaemon(true);
@@ -82,14 +87,17 @@ public final class ShareLinks {
 
     /**
      * Called first in the router. Returns true if the link was a share link or media link and
-     * is now being handled here (resolve or unwrap, then re-dispatch to the router).
+     * is now being handled here (resolve or unwrap, then re-dispatch to the router). rif would
+     * open a Matrix media link in its browser, where Reddit's redirects end at reddit.com/media
+     * and the "nice hat" post.
      */
     public static boolean intercept(String url, String p1, Object p2, String p3, String p4, boolean p5,
                                     Object p6, Object p7, Context ctx, Object p9) {
         try {
             if (url == null || url.equals(bypass)) return false;
             String media = mediaTarget(url);
-            if (media == null && !isShareLink(url, true)) return false;
+            final boolean matrix = isMatrixMedia(url);
+            if (media == null && !matrix && !isShareLink(url, true)) return false;
             if (ctx == null) {
                 ctx = Settings.context();
                 if (ctx == null) return false;
@@ -115,7 +123,7 @@ public final class ShareLinks {
             EXECUTOR.execute(() -> {
                 String resolved = null;
                 try {
-                    resolved = resolve(url);
+                    resolved = matrix ? resolveMatrixMedia(url) : resolve(url);
                 } catch (Throwable ignored) {
                 }
                 synchronized (IN_FLIGHT) {
@@ -396,7 +404,7 @@ public final class ShareLinks {
      * /media as a short link to the post with id "media" (a real r/funny post, "nice hat").
      * No /media intent filter exists, so these reach us only through the router; rif's WebViews
      * classify links themselves and skip it. Only Reddit-hosted targets are unwrapped: others
-     * keep rif's behaviour.
+     * keep rif's behaviour. A Matrix media target comes back through the router and resolves.
      */
     static String mediaTarget(String url) {
         Uri u = Uri.parse(url);
@@ -410,7 +418,11 @@ public final class ShareLinks {
         Uri t = Uri.parse(target);
         String targetScheme = t.getScheme();
         if (!"https".equalsIgnoreCase(targetScheme) && !"http".equalsIgnoreCase(targetScheme)) return null;
-        return isRedditMedia(t.getHost()) ? target : null;
+        return isRedditMedia(t.getHost()) || isMatrixMedia(target) ? target : null;
+    }
+
+    static boolean isMatrixMedia(String url) {
+        return url != null && MATRIX_MEDIA.matcher(url).matches();
     }
 
     private static boolean isReddit(String host) {
@@ -474,6 +486,29 @@ public final class ShareLinks {
             }
         }
         return null;
+    }
+
+    /** The i.redd.it image a Matrix media link redirects to, or null if anything is off. */
+    static String resolveMatrixMedia(String url) {
+        HttpURLConnection c = null;
+        try {
+            c = (HttpURLConnection) new URL(url).openConnection();
+            c.setRequestMethod("HEAD");
+            c.setInstanceFollowRedirects(false); // the next hop sends browsers to reddit.com/media
+            c.setConnectTimeout(TIMEOUT_MS);
+            c.setReadTimeout(TIMEOUT_MS);
+            c.setRequestProperty("User-Agent", UA);
+            int code = c.getResponseCode();
+            if (code != 301 && code != 302 && code != 303 && code != 307 && code != 308) return null;
+            String location = c.getHeaderField("Location");
+            if (location == null) return null;
+            URL next = new URL(new URL(url), location);
+            return isRedditMedia(next.getHost()) ? next.toString() : null;
+        } catch (Throwable t) {
+            return null;
+        } finally {
+            if (c != null) c.disconnect();
+        }
     }
 
     /** Drops share_id and utm_* tracking parameters, keeps the rest (e.g. context). */

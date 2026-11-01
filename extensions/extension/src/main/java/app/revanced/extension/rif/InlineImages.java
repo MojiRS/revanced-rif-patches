@@ -1501,7 +1501,8 @@ public final class InlineImages {
     /**
      * Maps a comment link to an image URL to embed, or null to leave it as a link.
      * Direct image links pass through; known media-host page links are resolved to
-     * their image via the page's og:image meta tag (cached in memory and on disk).
+     * their image via the page's og:image meta tag, and Matrix media links via their
+     * redirect (cached in memory and on disk).
      * Without [network], {@link #MISSING_URL} if that would need fetching the page.
      */
     private static String resolveImageUrl(String url, boolean network) {
@@ -1526,7 +1527,7 @@ public final class InlineImages {
 
         // "" = the page has no image (kept on disk for a day); null = the request failed
         // (kept only in memory).
-        String image = fetchOgImage(url);
+        String image = ShareLinks.isMatrixMedia(url) ? ShareLinks.resolveMatrixMedia(url) : fetchOgImage(url);
         RESOLVED.put(url, image == null ? "" : image);
         if (image != null) InlineCache.putText("og:" + url, image);
         return image == null || image.isEmpty() ? null : image;
@@ -1572,7 +1573,7 @@ public final class InlineImages {
         return best;
     }
 
-    private static boolean isResolvableHost(String url) {
+    static boolean isResolvableHost(String url) {
         String u = url.toLowerCase(Locale.US);
         return u.startsWith("https://imgur.com/")
                 || u.startsWith("https://www.imgur.com/")
@@ -1581,9 +1582,14 @@ public final class InlineImages {
                 || u.startsWith("https://www.redgifs.com/")
                 || u.startsWith("https://gfycat.com/")
                 || u.startsWith("https://www.gfycat.com/")
+                || u.startsWith("https://imgflip.com/i/")
+                || u.startsWith("https://www.imgflip.com/i/")
+                || u.startsWith("https://imgflip.com/gif/")
+                || u.startsWith("https://www.imgflip.com/gif/")
                 || u.contains("giphy.com/")
                 || u.contains("tenor.com/view/")
-                || u.contains("reddit.com/gallery/");
+                || u.contains("reddit.com/gallery/")
+                || ShareLinks.isMatrixMedia(url);
     }
 
     /** The page's og:image; "" if it has none (or is gone); null if the request failed. */
