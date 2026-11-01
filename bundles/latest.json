@@ -1,7 +1,7 @@
 {
-  "created_at": "2026-10-31T20:30:14",
-  "description": "### Fixes\n- **Fix share links**: reddit.com/media image links open in rif's image viewer instead of the wrong post.\n- **Inline images**: those links now show as images in comments.\n\n### Adding this bundle\nIn ReVanced Manager, add `https://raw.githubusercontent.com/MojiRS/revanced-rif-patches/main/bundles/stable.json` as a remote patch source. Requires rif is fun **5.6.22** (free or Golden Platinum), patched together with the official ReVanced bundle's **Spoof client** patch.\n",
-  "download_url": "https://github.com/MojiRS/revanced-rif-patches/releases/download/v1.7.1/patches.rvp",
+  "created_at": "2026-11-01T00:33:34",
+  "description": "### Fixes\n- **Fix share links**: matrix.redditspace.com image links open in rif's image viewer instead of the browser.\n- **Inline images**: those links, and imgflip links, now show as images in comments.\n\n### Adding this bundle\nIn ReVanced Manager, add `https://raw.githubusercontent.com/MojiRS/revanced-rif-patches/main/bundles/stable.json` as a remote patch source. Requires rif is fun **5.6.22** (free or Golden Platinum), patched together with the official ReVanced bundle's **Spoof client** patch.\n",
+  "download_url": "https://github.com/MojiRS/revanced-rif-patches/releases/download/v1.7.2/patches.rvp",
   "signature_download_url": "N/A",
-  "version": "v1.7.1"
+  "version": "v1.7.2"
 }
