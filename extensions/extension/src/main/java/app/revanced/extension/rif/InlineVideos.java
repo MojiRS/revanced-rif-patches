@@ -1330,11 +1330,24 @@ public final class InlineVideos {
             bar.setPadding(0, Math.round(dp(8)), 0, Math.round(dp(4)));
             bar.setClickable(true); // taps on the bar itself don't hide it
 
-            LinearLayout buttons = new LinearLayout(ctx);
+            int buttonW = rifDimen(ctx, "exo_media_button_width", 71);
+            // A video narrowed by the width/height limits can be narrower than four
+            // buttons at rif's width: shrink them evenly to fit.
+            LinearLayout buttons = new LinearLayout(ctx) {
+                @Override
+                protected void onMeasure(int widthSpec, int heightSpec) {
+                    int n = getChildCount();
+                    int avail = MeasureSpec.getSize(widthSpec);
+                    if (n > 0 && MeasureSpec.getMode(widthSpec) != MeasureSpec.UNSPECIFIED) {
+                        int w = Math.max(1, Math.min(buttonW, avail / n));
+                        for (int i = 0; i < n; i++) getChildAt(i).getLayoutParams().width = w;
+                    }
+                    super.onMeasure(widthSpec, heightSpec);
+                }
+            };
             buttons.setOrientation(LinearLayout.HORIZONTAL);
             buttons.setGravity(Gravity.CENTER);
             buttons.setPadding(0, Math.round(dp(4)), 0, 0);
-            int buttonW = rifDimen(ctx, "exo_media_button_width", 71);
             int buttonH = rifDimen(ctx, "exo_media_button_height", 52);
             // Same buttons and order as rif's player: previous (back to the start),
             // play/pause, repeat, sound.
@@ -1384,7 +1397,19 @@ public final class InlineVideos {
             bar.addView(buttons, new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-            LinearLayout progress = new LinearLayout(ctx);
+            // On a narrow video the two times and full screen button leave the seek bar
+            // a sliver: drop the duration there.
+            final int narrow = Math.round(dp(200));
+            LinearLayout progress = new LinearLayout(ctx) {
+                @Override
+                protected void onMeasure(int widthSpec, int heightSpec) {
+                    if (duration != null) {
+                        int vis = MeasureSpec.getSize(widthSpec) < narrow ? GONE : VISIBLE;
+                        if (duration.getVisibility() != vis) duration.setVisibility(vis);
+                    }
+                    super.onMeasure(widthSpec, heightSpec);
+                }
+            };
             progress.setOrientation(LinearLayout.HORIZONTAL);
             progress.setGravity(Gravity.CENTER_VERTICAL);
             progress.setPadding(Math.round(dp(10)), 0, Math.round(dp(4)), 0);
