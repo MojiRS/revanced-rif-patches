@@ -155,9 +155,13 @@ public final class InlineVideos {
         }
     }
 
-    private static final Video NONE = new Video("", "", null, false, 0, 0);
-    // Link -> resolved video (NONE = not playable), to avoid re-fetching manifests.
+    // Link -> resolved video, to avoid re-fetching manifests.
     private static final LruCache<String, Video> RESOLVED = new LruCache<>(128);
+    // Link -> when its lookup last failed (uptime ms). A failure is retried after
+    // RETRY_FAILED_MS, not remembered for the whole session: a just-posted Reddit video's
+    // manifest isn't there until Reddit has processed it, and a network error passes.
+    private static final LruCache<String, Long> FAILED = new LruCache<>(128);
+    private static final long RETRY_FAILED_MS = 2 * 60 * 1000;
 
     static boolean isVideoLink(String url) {
         return url != null && (PLAYER_LINK.matcher(url).matches() || V_REDD_IT.matcher(url).matches()
@@ -194,7 +198,12 @@ public final class InlineVideos {
 
     private static Video resolve(String url, boolean network) {
         Video cached = RESOLVED.get(url);
-        if (cached != null) return cached == NONE ? null : cached;
+        if (cached != null) return cached;
+        Long failedAt = FAILED.get(url);
+        if (failedAt != null) {
+            if (SystemClock.uptimeMillis() - failedAt < RETRY_FAILED_MS) return null;
+            FAILED.remove(url);
+        }
         Matcher m;
         if ((m = IMGUR_VIDEO.matcher(url)).matches()) {
             String mp4 = "https://i.imgur.com/" + m.group(1) + ".mp4";
@@ -214,8 +223,12 @@ public final class InlineVideos {
         } else if ((m = V_REDD_IT.matcher(url)).matches()) {
             video = fromManifest("https://v.redd.it/" + m.group(1) + "/");
         }
-        RESOLVED.put(url, video == null ? NONE : video);
-        if (video != null) InlineCache.putText("video:" + url, video.serialize());
+        if (video == null) {
+            FAILED.put(url, SystemClock.uptimeMillis());
+            return null;
+        }
+        RESOLVED.put(url, video);
+        InlineCache.putText("video:" + url, video.serialize());
         return video;
     }
 
