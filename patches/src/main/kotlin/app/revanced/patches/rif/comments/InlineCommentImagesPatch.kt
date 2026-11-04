@@ -39,6 +39,27 @@ val inlineImagesSettingsResourcePatch = resourcePatch(
                     dependency = "INLINE_IMAGES",
                 ),
             )
+            for ((side, ofWhat) in listOf("WIDTH" to "width", "HEIGHT" to "height")) {
+                category.appendChild(
+                    doc.checkBoxPreference(
+                        "INLINE_IMAGES_LIMIT_$side",
+                        "Limit inline media $ofWhat",
+                        dependency = "INLINE_IMAGES",
+                        default = false,
+                    ),
+                )
+                category.appendChild(
+                    doc.seekBarPreference(
+                        "INLINE_IMAGES_MAX_$side",
+                        "Max $ofWhat (% of screen)",
+                        min = 10,
+                        max = 100,
+                        increment = 5,
+                        default = 100,
+                        dependency = "INLINE_IMAGES_LIMIT_$side",
+                    ),
+                )
+            }
             category.appendChild(
                 doc.checkBoxPreference(
                     "INLINE_ALBUM_NAVIGATION",
