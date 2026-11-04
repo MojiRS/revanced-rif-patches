@@ -1223,11 +1223,12 @@ public final class InlineVideos {
             setPaused(player, true);
             if (!player.muted) setMuted(player, true);
         }
-        String url = overlay.span.link.getURL();
         try {
-            if (PLAYER_LINK.matcher(url).matches()) {
-                // rif opens Reddit video player links in its player when they come in as
-                // a VIEW intent (as its own link-tracking activity does).
+            String url = playerUrl(overlay.span);
+            if (url != null) {
+                // rif opens video URLs in its player when they come in as a VIEW intent (as
+                // its own link-tracking activity does), without the link sheet link.onClick
+                // would show.
                 Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
                 intent.setComponent(new ComponentName(tv.getContext(), RIF_MAIN_ACTIVITY));
                 tv.getContext().startActivity(intent);
@@ -1237,6 +1238,21 @@ public final class InlineVideos {
             Log.w(TAG, "opening the player failed", t);
         }
         overlay.span.link.onClick(tv); // rif's usual handling of the link
+    }
+
+    /**
+     * The URL rif's player opens for [span]'s video, null if there's none: the link itself
+     * for Reddit videos, the resolved .mp4 for imgur (the link may be an album, or a .gifv).
+     */
+    static String playerUrl(VideoSpan span) {
+        String url = span.link.getURL();
+        if (url != null && (PLAYER_LINK.matcher(url).matches() || V_REDD_IT.matcher(url).matches())) {
+            return url;
+        }
+        String mp4 = span.video == null ? null : span.video.url;
+        if (mp4 != null && IMGUR_VIDEO.matcher(mp4).matches()) return mp4;
+        if (url != null && IMGUR_VIDEO.matcher(url).matches()) return url;
+        return null;
     }
 
     // ---- controls ---------------------------------------------------------------------
