@@ -1,7 +1,7 @@
 {
-  "created_at": "2026-11-04T06:18:44",
-  "description": "Test build, not a release. For stable builds use main/bundles/stable.json.\n\n**Inline video sound no longer stutters**\n\n- Sound sync for inline Reddit videos rewritten: no more repeated re-seeks that made the sound cut out and come back.\n- Sync also runs with the controls hidden.\n",
-  "download_url": "https://raw.githubusercontent.com/MojiRS/revanced-rif-patches/test-builds/patches-1.8.0-dev7.rvp",
+  "created_at": "2026-11-05T23:52:43",
+  "description": "Test build, not a release. For stable builds use main/bundles/stable.json.\n\n1.8.0-dev8\n\n- New patch \"Keep reply box above keyboard\": long replies scroll inside the reply box instead of going behind the keyboard.\n\nTest: write a long reply (20+ lines) with the keyboard open; the line you're typing stays visible above the keyboard.\n",
+  "download_url": "https://raw.githubusercontent.com/MojiRS/revanced-rif-patches/test-builds/patches-1.8.0-dev8.rvp",
   "signature_download_url": "N/A",
-  "version": "v1.8.0-dev7"
+  "version": "v1.8.0-dev8"
 }
