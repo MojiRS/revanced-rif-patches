@@ -1,7 +1,7 @@
 {
-  "created_at": "2026-11-06T00:49:25",
-  "description": "Test build, not a release. For stable builds use main/bundles/stable.json.\n\nKeep reply box above keyboard: long replies now scroll inside the text field, so the header and Cancel / Save / Send stay visible above the keyboard and the typed line isn't cut off.\n",
-  "download_url": "https://raw.githubusercontent.com/MojiRS/revanced-rif-patches/test-builds/patches-1.8.0-dev9.rvp",
+  "created_at": "2026-11-06T02:01:09",
+  "description": "Test build, not a release. For stable builds use main/bundles/stable.json.\n\n1.8.0-dev10\n\n- Inline video sound is downloaded on unmute and played from the phone, so it no longer cuts out on longer videos.\n- Test: the 94 s video that still stuttered on dev7, with sound on, on speakers and earbuds.\n",
+  "download_url": "https://raw.githubusercontent.com/MojiRS/revanced-rif-patches/test-builds/patches-1.8.0-dev10.rvp",
   "signature_download_url": "N/A",
-  "version": "v1.8.0-dev9"
+  "version": "v1.8.0-dev10"
 }
