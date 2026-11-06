@@ -7,6 +7,8 @@ import android.view.ViewGroup;
 import android.view.ViewTreeObserver;
 import android.view.Window;
 import android.view.WindowManager;
+import android.widget.ScrollView;
+import android.widget.TextView;
 
 /**
  * "Keep reply box above keyboard": rif's reply box is a floating dialog whose window is as
@@ -18,7 +20,8 @@ import android.view.WindowManager;
  * full-size root, the box centred in it, the box's contents in a ScrollView), then keep the
  * bottom padding of the dialog's content equal to how far the keyboard covers it. The box is
  * then centred in the space above the keyboard, its ScrollView is capped there, and the
- * edit text keeps the cursor in view by scrolling.
+ * edit text keeps the cursor in view by scrolling. The edit text is also capped so the whole
+ * box, buttons included, fits above the keyboard (see capEditHeight).
  *
  * Hooked right after rif's dialog base class sets the window's soft input mode in onStart,
  * which runs for every rif dialog, so only the reply box (the one with the
@@ -48,8 +51,15 @@ public final class ReplyBoxFix {
             }
             final View content = decor.findViewById(android.R.id.content);
             if (content == null) return;
+            final View frame = decor.findViewById(id);
+            final ScrollView scroll = findScrollView(frame);
+            final TextView edit = findById(decor, "reply_body") instanceof TextView
+                    ? (TextView) findById(decor, "reply_body") : null;
+            final View bar = findById(decor, "markdown_button_bar_floating");
+            final int gap = Math.round(8 * decor.getResources().getDisplayMetrics().density);
             final Rect visible = new Rect();
             final int[] loc = new int[2];
+            final int[] cap = {-1};
             decor.getViewTreeObserver().addOnGlobalLayoutListener(
                     new ViewTreeObserver.OnGlobalLayoutListener() {
                         @Override
@@ -63,7 +73,9 @@ public final class ReplyBoxFix {
                                 if (pad != content.getPaddingBottom()) {
                                     content.setPadding(content.getPaddingLeft(), content.getPaddingTop(),
                                             content.getPaddingRight(), pad);
+                                    return; // the next layout pass sees the new space
                                 }
+                                capEditHeight(content, scroll, edit, bar, gap, cap);
                             } catch (Throwable t) {
                                 Log.w(TAG, "layout pass failed", t);
                             }
@@ -72,5 +84,49 @@ public final class ReplyBoxFix {
         } catch (Throwable t) {
             Log.w(TAG, "onDialogStart failed", t);
         }
+    }
+
+    /**
+     * rif's ScrollView holds the header, the edit text and the Cancel / Save / Send row, so a
+     * long reply pushes the buttons out of view, and ScrollView scrolls the cursor line into
+     * its own (clipped) bottom padding. Cap the edit text instead, so the whole box fits the
+     * space above the keyboard: the text scrolls inside the edit text (which keeps the cursor
+     * in view itself) and the header and buttons stay on screen. If even a 3-line edit text
+     * wouldn't fit (landscape), leave it to the ScrollView as rif does.
+     */
+    private static void capEditHeight(View content, ScrollView scroll, TextView edit, View bar,
+                                      int gap, int[] cap) {
+        if (scroll == null || edit == null || scroll.getChildCount() == 0) return;
+        int avail = content.getHeight() - content.getPaddingTop() - content.getPaddingBottom() - gap;
+        if (bar != null && bar.getVisibility() == View.VISIBLE) avail -= bar.getHeight();
+        int others = scroll.getChildAt(0).getHeight() - edit.getHeight()
+                + scroll.getPaddingTop() + scroll.getPaddingBottom();
+        int max = avail - others;
+        int min = edit.getLineHeight() * 3 + edit.getCompoundPaddingTop() + edit.getCompoundPaddingBottom();
+        int want = max >= min ? max : Integer.MAX_VALUE;
+        if (want == cap[0]) return;
+        cap[0] = want;
+        edit.setMaxHeight(want);
+        edit.post(() -> {
+            int sel = edit.getSelectionEnd();
+            if (sel >= 0) edit.bringPointIntoView(sel);
+        });
+    }
+
+    private static View findById(View root, String name) {
+        int id = root.getResources().getIdentifier(name, "id", root.getContext().getPackageName());
+        return id == 0 ? null : root.findViewById(id);
+    }
+
+    private static ScrollView findScrollView(View v) {
+        if (v instanceof ScrollView) return (ScrollView) v;
+        if (v instanceof ViewGroup) {
+            ViewGroup g = (ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) {
+                ScrollView s = findScrollView(g.getChildAt(i));
+                if (s != null) return s;
+            }
+        }
+        return null;
     }
 }
