@@ -1398,7 +1398,15 @@ public final class InlineImages {
     @android.annotation.TargetApi(28) // only called under an SDK_INT >= P check
     private static Drawable decodeAnimated(byte[] data) {
         try {
-            ImageDecoder.Source src = ImageDecoder.createSource(ByteBuffer.wrap(data));
+            // A direct buffer, not ByteBuffer.wrap(data): Android 10 reads a heap
+            // buffer through JNI when libhwui decodes later frames on its
+            // AnimatedImageTh thread, which isn't attached to the VM, and aborts
+            // (SIGABRT in ByteArrayStream::read). A direct buffer is read from its
+            // native address. Glide does the same.
+            ByteBuffer buf = ByteBuffer.allocateDirect(data.length);
+            buf.put(data);
+            buf.flip();
+            ImageDecoder.Source src = ImageDecoder.createSource(buf);
             Drawable d = ImageDecoder.decodeDrawable(src, new ImageDecoder.OnHeaderDecodedListener() {
                 @Override
                 public void onHeaderDecoded(ImageDecoder decoder, ImageDecoder.ImageInfo info,
