@@ -47,6 +47,7 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.lang.ref.WeakReference;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -76,8 +77,9 @@ import java.util.regex.Pattern;
  * shows controls like rif's own player's: play/pause, sound, seek, and full screen (rif's
  * player). While they're
  * hidden, touches fall through the overlay to the TextView, so long press selects the
- * comment as on images. Reddit serves a video's sound as a separate file; unmuting plays it
- * with a second MediaPlayer kept in sync.
+ * comment as on images. Reddit serves a video's sound as a separate file; unmuting downloads
+ * it (SoundCache; streaming it made the sound cut out) and plays the copy with a second
+ * MediaPlayer kept in sync.
  *
  * Playback follows the TextureView's surface: it starts when the surface is created (the
  * row is on screen) and is released when it's destroyed (scrolled off / recycled). A video
@@ -610,7 +612,7 @@ public final class InlineVideos {
         }
     }
 
-    /** A video's MediaPlayer (plus one for its sound once unmuted), and its overlay. */
+    /** A video's MediaPlayer (plus one for its sound's local copy once unmuted), and its overlay. */
     private static final class Player {
         final VideoSpan span;
         final MediaPlayer video;
@@ -618,6 +620,7 @@ public final class InlineVideos {
         Overlay owner;
         boolean prepared;
         boolean audioPrepared;
+        boolean audioLoading; // the sound file is being downloaded (see loadSound)
         boolean rendering;
         boolean paused;
         boolean muted = true;
@@ -1007,28 +1010,7 @@ public final class InlineVideos {
             } else if (muted) {
                 pauseAudio(player);
             } else if (player.audio == null && tv != null) {
-                MediaPlayer audio = new MediaPlayer();
-                player.audio = audio;
-                player.audioPrepared = false;
-                audio.setDataSource(tv.getContext(), Uri.parse(player.span.video.audioUrl), headers());
-                audio.setAudioAttributes(MEDIA);
-                audio.setOnPreparedListener(m -> {
-                    if (player.audio != m) return;
-                    player.audioPrepared = true;
-                    seekAudio(player, player.position() + player.audioLatency);
-                    if (!player.muted && !player.paused) {
-                        m.start();
-                        startSync();
-                    }
-                });
-                audio.setOnSeekCompleteListener(m -> {
-                    if (player.audio == m) player.audioSeeking = false;
-                });
-                audio.setOnErrorListener((m, what, extra) -> {
-                    Log.w(TAG, "sound error " + what + "/" + extra + ": " + player.span.video.audioUrl);
-                    return true;
-                });
-                audio.prepareAsync();
+                loadSound(player, tv.getContext().getApplicationContext());
             } else if (player.audio != null && player.audioPrepared) {
                 seekAudio(player, player.position() + player.audioLatency);
                 if (!player.paused) {
@@ -1040,6 +1022,69 @@ public final class InlineVideos {
             Log.w(TAG, "mute toggle failed", t);
         }
         overlayChanged(player);
+    }
+
+    /**
+     * Gets the sound going for an unmuted player: from the local copy of its sound file (see
+     * SoundCache) if there is one, else downloading it first (the player stays unmuted, the
+     * sound arrives shortly). If the download fails, streams the sound instead.
+     */
+    private static void loadSound(Player player, Context ctx) {
+        if (player.audioLoading) return;
+        File dir = SoundCache.dir(ctx.getCacheDir());
+        File local = dir == null ? null : SoundCache.cached(dir, player.span.video.audioUrl);
+        if (local != null || dir == null) {
+            startSound(player, ctx, local);
+            return;
+        }
+        player.audioLoading = true;
+        SoundCache.download(dir, player.span.video.audioUrl, InlineImages.USER_AGENT, (file, error) -> {
+            if (file == null) Log.w(TAG, "sound download failed (" + error + "); streaming");
+            InlineImages.MAIN.post(() -> {
+                player.audioLoading = false;
+                try {
+                    // Muted meanwhile: the file is kept, the next unmute uses it.
+                    if (PLAYERS.get(player.span) != player || player.muted || player.audio != null) return;
+                    startSound(player, ctx, file);
+                } catch (Throwable t) {
+                    Log.w(TAG, "sound start failed", t);
+                }
+            });
+        });
+    }
+
+    /** Creates and prepares the sound player, on [file] or (null) streaming the sound URL. */
+    private static void startSound(Player player, Context ctx, File file) {
+        try {
+            MediaPlayer audio = new MediaPlayer();
+            player.audio = audio;
+            player.audioPrepared = false;
+            if (file != null) {
+                audio.setDataSource(file.getAbsolutePath());
+            } else {
+                audio.setDataSource(ctx, Uri.parse(player.span.video.audioUrl), headers());
+            }
+            audio.setAudioAttributes(MEDIA);
+            audio.setOnPreparedListener(m -> {
+                if (player.audio != m) return;
+                player.audioPrepared = true;
+                seekAudio(player, player.position() + player.audioLatency);
+                if (!player.muted && !player.paused) {
+                    m.start();
+                    startSync();
+                }
+            });
+            audio.setOnSeekCompleteListener(m -> {
+                if (player.audio == m) player.audioSeeking = false;
+            });
+            audio.setOnErrorListener((m, what, extra) -> {
+                Log.w(TAG, "sound error " + what + "/" + extra + ": " + player.span.video.audioUrl);
+                return true;
+            });
+            audio.prepareAsync();
+        } catch (Throwable t) {
+            Log.w(TAG, "mute toggle failed", t);
+        }
     }
 
     // ---- sound sync ------------------------------------------------------------------

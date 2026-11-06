@@ -180,7 +180,7 @@ final class InlineCache {
         }
     }
 
-    private static String sha1(String key) {
+    static String sha1(String key) {
         try {
             byte[] digest = MessageDigest.getInstance("SHA-1").digest(key.getBytes(StandardCharsets.UTF_8));
             StringBuilder sb = new StringBuilder(digest.length * 2);
