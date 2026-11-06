@@ -888,7 +888,6 @@ public final class InlineVideos {
         }
         player.audio = null;
         player.prepared = false;
-        if (TEST_DROP_SOUND_CACHE) dropSoundCopy(player);
         stopSyncIfIdle();
         overlayChanged(player);
         if (player.owner != null) invalidateText(player.owner);
@@ -1033,7 +1032,6 @@ public final class InlineVideos {
     private static void loadSound(Player player, Context ctx) {
         if (player.audioLoading) return;
         File dir = SoundCache.dir(ctx.getCacheDir());
-        soundDir = dir;
         File local = dir == null ? null : SoundCache.cached(dir, player.span.video.audioUrl);
         if (local != null || dir == null) {
             startSound(player, ctx, local);
@@ -1046,28 +1044,13 @@ public final class InlineVideos {
                 player.audioLoading = false;
                 try {
                     // Muted meanwhile: the file is kept, the next unmute uses it.
-                    if (PLAYERS.get(player.span) != player) {
-                        if (TEST_DROP_SOUND_CACHE) dropSoundCopy(player);
-                        return;
-                    }
-                    if (player.muted || player.audio != null) return;
+                    if (PLAYERS.get(player.span) != player || player.muted || player.audio != null) return;
                     startSound(player, ctx, file);
                 } catch (Throwable t) {
                     Log.w(TAG, "sound start failed", t);
                 }
             });
         });
-    }
-
-    // TESTING ONLY (1.8.0-dev11): delete a video's downloaded sound when its player is released
-    // (scrolled off, screen left), so every play downloads it again. Must be false in a release.
-    static final boolean TEST_DROP_SOUND_CACHE = true;
-    private static File soundDir;
-
-    private static void dropSoundCopy(Player player) {
-        if (soundDir == null || player.span.video.audioUrl == null) return;
-        File f = new File(soundDir, SoundCache.fileName(player.span.video.audioUrl));
-        if (f.delete()) Log.i(TAG, "test build: sound copy deleted");
     }
 
     /** Creates and prepares the sound player, on [file] or (null) streaming the sound URL. */
