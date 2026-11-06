@@ -106,3 +106,13 @@ rif's reply box is a floating dialog as tall as its text. The box doesn't learn 
 No settings.
 
 How it works: a hook right after rif's dialog base class sets the dialog window's soft input mode (in `onStart`) calls the extension, which, for a dialog containing the `scrollview_frame` view (the reply box), sets the window's height to `MATCH_PARENT` (keeping its width) and, on every layout pass, sets the bottom padding of the dialog's content view to the height the keyboard covers (from `getWindowVisibleDisplayFrame`). rif's own layout (the box centred in a full-size root, its contents in a `ScrollView`) then caps and scrolls the box above the keyboard.
+
+## Fix broken markdown links
+
+Shows links like `[name](u/name)` as links instead of raw text.
+
+Reddit's markdown renderer rejects a link whose target has no scheme and no leading slash, such as `[Lux](u/Lux_Stella)` or `[the sub](r/MojiTesting)`. It sends the source as plain text with only the `u/…` and `r/…` pieces underlined, so rif shows the brackets and parentheses. (New Reddit shows these as links, so authors don't notice.) This patch turns each such link into its label, as one link to the user or subreddit, which opens like rif's other username and subreddit links and appears once in the links list. Only `u/name` and `r/name` targets (with or without a slash in front or behind) are repaired; other targets, such as `[x](example.com)`, and text in code are left alone. Works in comments, text posts and messages.
+
+No settings.
+
+How it works: a hook in rif's body renderer, after the body's HTML becomes styled text and before rif turns its link spans into tappable links, calls the extension. It finds `[label](target)` where the target is `u/name` or `r/name` and Reddit has underlined the target (which also excludes code), replaces the whole text with the label, drops the underlines inside it and puts one link on the label. Any failure leaves the body as it was.
