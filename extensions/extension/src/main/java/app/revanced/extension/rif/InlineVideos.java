@@ -851,7 +851,7 @@ public final class InlineVideos {
                 seek(player, 0);
                 if (!player.paused) {
                     m.start();
-                    if (player.audio != null && player.audioPrepared) player.audio.start();
+                    if (player.audio != null && player.audioPrepared && !player.muted) player.audio.start();
                 }
             });
             mp.setOnErrorListener((m, what, extra) -> {
@@ -925,7 +925,7 @@ public final class InlineVideos {
                 pauseAudio(player);
             } else {
                 player.video.start();
-                if (player.audio != null && player.audioPrepared) {
+                if (player.audio != null && player.audioPrepared && !player.muted) {
                     seekAudio(player, player.position() + player.audioLatency);
                     player.audio.start();
                     startSync();
@@ -1155,7 +1155,6 @@ public final class InlineVideos {
         // Only while playing: setting the speed on a stopped player can start it on some versions.
         if (player.audio == null || player.audioNudge == nudge || !player.audio.isPlaying()) return;
         player.audioNudge = nudge;
-        Log.i(TAG, "sound speed " + (nudge == 0 ? "normal" : nudge > 0 ? "+3%" : "-3%"));
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M || nudgeFailed) return;
         try {
             applySpeed(player.audio, nudge == 0 ? 1f : nudge > 0 ? SoundSync.FAST : SoundSync.SLOW);

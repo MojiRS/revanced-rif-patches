@@ -24,8 +24,9 @@ import android.widget.TextView;
  * box, buttons included, fits above the keyboard (see capEditHeight).
  *
  * Hooked right after rif's dialog base class sets the window's soft input mode in onStart,
- * which runs for every rif dialog, so only the reply box (the one with the
- * {@code scrollview_frame} view) is touched.
+ * which runs for every rif dialog, so only the comment reply box (the one with both the
+ * {@code scrollview_frame} and {@code quote_parent} views) is touched; the modmail dialogs
+ * share {@code scrollview_frame} and are left alone.
  */
 public final class ReplyBoxFix {
 
@@ -41,6 +42,9 @@ public final class ReplyBoxFix {
             int id = decor.getResources().getIdentifier(
                     "scrollview_frame", "id", decor.getContext().getPackageName());
             if (id == 0 || decor.findViewById(id) == null) return;
+            // The modmail dialogs share scrollview_frame; only the comment reply dialog has the
+            // "quote parent" button. Modmail dialogs are left exactly as rif has them.
+            if (findById(decor, "quote_parent") == null) return;
             if (decor.getTag(id) != null) return; // onStart runs again after the app was in the background
             decor.setTag(id, Boolean.TRUE);
 
@@ -108,8 +112,12 @@ public final class ReplyBoxFix {
         cap[0] = want;
         edit.setMaxHeight(want);
         edit.post(() -> {
-            int sel = edit.getSelectionEnd();
-            if (sel >= 0) edit.bringPointIntoView(sel);
+            try {
+                int sel = edit.getSelectionEnd();
+                if (sel >= 0 && edit.isAttachedToWindow()) edit.bringPointIntoView(sel);
+            } catch (Throwable t) {
+                Log.w(TAG, "keeping the cursor in view failed", t);
+            }
         });
     }
 

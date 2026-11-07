@@ -5,6 +5,7 @@ import android.util.Log;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
+import org.json.JSONTokener;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -82,8 +83,18 @@ public final class GalleryRepair {
     }
 
     private static byte[] repairOrThrow(byte[] original, Probe probe) throws JSONException {
-        JSONObject root = new JSONObject(new String(original, UTF_8));
-        JSONObject post = root.getJSONObject("data").getJSONArray("children")
+        // The listing is either an object ({data: {children: [...]}}) or, for some requests, an
+        // array of listings ([{data: {children: [...]}}, ...]) whose first one holds the post.
+        Object root = new JSONTokener(new String(original, UTF_8)).nextValue();
+        JSONObject listing;
+        if (root instanceof JSONObject) {
+            listing = (JSONObject) root;
+        } else if (root instanceof JSONArray) {
+            listing = ((JSONArray) root).getJSONObject(0);
+        } else {
+            return original;
+        }
+        JSONObject post = listing.getJSONObject("data").getJSONArray("children")
                 .getJSONObject(0).getJSONObject("data");
         JSONObject meta = post.optJSONObject("media_metadata");
         JSONObject galleryData = post.optJSONObject("gallery_data");

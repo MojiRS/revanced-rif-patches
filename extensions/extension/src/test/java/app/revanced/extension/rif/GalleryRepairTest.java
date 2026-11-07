@@ -139,6 +139,32 @@ public class GalleryRepairTest {
     }
 
     @Test
+    public void arrayRootIsRepairedToo() throws Exception {
+        String obj = gallery("\"abc1\":" + FAILED, "{\"media_id\":\"abc1\"}");
+        byte[] out = GalleryRepair.repair(("[" + obj + "]").getBytes(UTF_8), url -> url.endsWith(".png"));
+        JSONObject root = new org.json.JSONArray(new String(out, UTF_8)).getJSONObject(0);
+        assertEquals("https://i.redd.it/abc1.png",
+                meta(root).getJSONObject("abc1").getJSONObject("s").getString("u"));
+        assertEquals(1, itemCount(root));
+    }
+
+    @Test
+    public void arrayRootWithoutRepairNeedIsReturnedAsIs() {
+        byte[] in = ("[" + gallery("\"a\":" + OK, "{\"media_id\":\"a\"}") + "]").getBytes(UTF_8);
+        assertArrayEquals(in, GalleryRepair.repair(in, url -> {
+            throw new AssertionError("no network call expected");
+        }));
+    }
+
+    @Test
+    public void otherShapesAreReturnedAsIs() {
+        for (String s : new String[]{"[]", "[1]", "\"x\"", "42", "{}"}) {
+            byte[] in = s.getBytes(UTF_8);
+            assertArrayEquals(in, GalleryRepair.repair(in, url -> true));
+        }
+    }
+
+    @Test
     public void garbageIsReturnedAsIs() {
         byte[] in = "not json".getBytes(UTF_8);
         assertArrayEquals(in, GalleryRepair.repair(in, url -> true));

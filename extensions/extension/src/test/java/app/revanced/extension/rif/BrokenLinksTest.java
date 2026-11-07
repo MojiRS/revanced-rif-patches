@@ -30,16 +30,16 @@ public class BrokenLinksTest {
 
     @Test
     public void realCommentFromReddit() {
-        // body_html gave: "[" + link(u/Lux) + "_Stella](" + link(u/Lux_Stella) + ")"
-        String t = "Sorry [u/Lux_Stella](u/Lux_Stella), I know it was a joke";
-        int[] a = at(t, "u/Lux", 0);
-        int[] b = at(t, "u/Lux_Stella", 1);
+        // body_html gave: "[" + link(u/spez) + "_ab](" + link(u/spez_ab) + ")"
+        String t = "Sorry [u/spez_ab](u/spez_ab), I know it was a joke";
+        int[] a = at(t, "u/spez", 0);
+        int[] b = at(t, "u/spez_ab", 1);
         List<BrokenLinks.Fix> f = BrokenLinks.find(t, ranges(a[0], a[1], b[0], b[1]), NONE);
         assertEquals(1, f.size());
         assertEquals(6, f.get(0).start);
         assertEquals(t.indexOf(']'), f.get(0).labelEnd);
         assertEquals(t.indexOf(')') + 1, f.get(0).end);
-        assertEquals("/u/Lux_Stella", f.get(0).href);
+        assertEquals("/u/spez_ab", f.get(0).href);
     }
 
     @Test
@@ -54,13 +54,13 @@ public class BrokenLinksTest {
 
     @Test
     public void subredditAndSlashes() {
-        String t = "[a](r/MojiTesting) [b](/r/Foo/) [c](u/x/)";
-        int[] r1 = at(t, "r/MojiTesting", 0);
+        String t = "[a](r/AskReddit) [b](/r/Foo/) [c](u/x/)";
+        int[] r1 = at(t, "r/AskReddit", 0);
         int[] r2 = at(t, "r/Foo", 0);
         int[] u3 = at(t, "u/x", 0);
         List<BrokenLinks.Fix> f = BrokenLinks.find(t, ranges(r1[0], r1[1], r2[0], r2[1], u3[0], u3[1]), NONE);
         assertEquals(3, f.size());
-        assertEquals("/r/MojiTesting", f.get(0).href);
+        assertEquals("/r/AskReddit", f.get(0).href);
         assertEquals("/r/Foo", f.get(1).href);
         assertEquals("/u/x", f.get(2).href);
     }
