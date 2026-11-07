@@ -111,7 +111,7 @@ How it works: a hook right after rif's dialog base class sets the dialog window'
 
 Shows links like `[name](u/name)` as links instead of raw text.
 
-Reddit's markdown renderer rejects a link whose target has no scheme and no leading slash, such as `[Lux](u/Lux_Stella)` or `[the sub](r/MojiTesting)`. It sends the source as plain text with only the `u/…` and `r/…` pieces underlined, so rif shows the brackets and parentheses. (New Reddit shows these as links, so authors don't notice.) This patch turns each such link into its label, as one link to the user or subreddit, which opens like rif's other username and subreddit links and appears once in the links list. Only `u/name` and `r/name` targets (with or without a slash in front or behind) are repaired; other targets, such as `[x](example.com)`, and text in code are left alone. Works in comments, text posts and messages.
+Reddit's markdown renderer rejects a link whose target has no scheme and no leading slash, such as `[Spez](u/spez)` or `[the sub](r/AskReddit)`. It sends the source as plain text with only the `u/…` and `r/…` pieces underlined, so rif shows the brackets and parentheses. (New Reddit shows these as links, so authors don't notice.) This patch turns each such link into its label, as one link to the user or subreddit, which opens like rif's other username and subreddit links and appears once in the links list. Only `u/name` and `r/name` targets (with or without a slash in front or behind) are repaired; other targets, such as `[x](example.com)`, and text in code are left alone. Works in comments, text posts and messages.
 
 No settings.
 
