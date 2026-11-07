@@ -16,6 +16,10 @@ public final class Settings {
     public static final String KEY_BLOCK_ADS = "BLOCK_ADS";
     public static final String KEY_INLINE_IMAGES = "INLINE_IMAGES";
     public static final String KEY_INLINE_IMAGES_SCALE = "INLINE_IMAGES_SCALE";
+    public static final String KEY_INLINE_IMAGES_LIMIT_WIDTH = "INLINE_IMAGES_LIMIT_WIDTH";
+    public static final String KEY_INLINE_IMAGES_MAX_WIDTH = "INLINE_IMAGES_MAX_WIDTH";
+    public static final String KEY_INLINE_IMAGES_LIMIT_HEIGHT = "INLINE_IMAGES_LIMIT_HEIGHT";
+    public static final String KEY_INLINE_IMAGES_MAX_HEIGHT = "INLINE_IMAGES_MAX_HEIGHT";
     public static final String KEY_INLINE_ALBUM_NAVIGATION = "INLINE_ALBUM_NAVIGATION";
     public static final String KEY_INLINE_IMAGES_LONG_PRESS_SELECT = "INLINE_IMAGES_LONG_PRESS_SELECT";
     public static final String KEY_INLINE_IMAGES_LONG_PRESS_DELAY = "INLINE_IMAGES_LONG_PRESS_DELAY";
@@ -24,6 +28,7 @@ public final class Settings {
     public static final String KEY_YOUTUBE_CAPTIONS_LANDSCAPE = "YOUTUBE_CAPTIONS_LANDSCAPE";
     public static final String KEY_YOUTUBE_CAPTIONS_VERTICAL = "YOUTUBE_CAPTIONS_VERTICAL";
     public static final String KEY_YOUTUBE_CAPTIONS_SHORTS = "YOUTUBE_CAPTIONS_SHORTS";
+    public static final String KEY_HIDE_BLOCKED_DISTINGUISHED = "HIDE_BLOCKED_DISTINGUISHED";
 
     private static SharedPreferences prefs;
     private static Context appContext;
@@ -98,6 +103,26 @@ public final class Settings {
         return get(KEY_INLINE_IMAGES_SCALE, true);
     }
 
+    /** Inline media width cap, % of the comment width at full screen (10-100), or 0 when off. */
+    public static int inlineMaxWidthPercent() {
+        return get(KEY_INLINE_IMAGES_LIMIT_WIDTH, false) ? percent(KEY_INLINE_IMAGES_MAX_WIDTH) : 0;
+    }
+
+    /** Inline media height cap, % of the screen height (10-100), or 0 when off. */
+    public static int inlineMaxHeightPercent() {
+        return get(KEY_INLINE_IMAGES_LIMIT_HEIGHT, false) ? percent(KEY_INLINE_IMAGES_MAX_HEIGHT) : 0;
+    }
+
+    private static int percent(String key) {
+        try {
+            SharedPreferences p = prefs();
+            int v = p == null ? 100 : p.getInt(key, 100);
+            return Math.max(10, Math.min(100, v));
+        } catch (Throwable t) {
+            return 100;
+        }
+    }
+
     public static boolean inlineAlbumNavigation() {
         return get(KEY_INLINE_ALBUM_NAVIGATION, true);
     }
@@ -123,6 +148,11 @@ public final class Settings {
     /** Captions on by default: videos opened from a youtube.com/shorts link. */
     public static boolean youtubeCaptionsShorts() {
         return get(KEY_YOUTUBE_CAPTIONS_SHORTS, false);
+    }
+
+    /** Hide distinguished (mod/admin) comments from blocked users. Off unless turned on. */
+    public static boolean hideBlockedDistinguished() {
+        return get(KEY_HIDE_BLOCKED_DISTINGUISHED, false);
     }
 
     public static boolean longPressImageSelectsComment() {

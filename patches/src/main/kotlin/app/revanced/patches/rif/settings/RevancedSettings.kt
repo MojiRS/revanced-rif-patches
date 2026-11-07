@@ -5,6 +5,7 @@ import app.revanced.patcher.fingerprint
 import app.revanced.patcher.patch.ResourcePatchContext
 import app.revanced.patcher.patch.bytecodePatch
 import app.revanced.patcher.patch.resourcePatch
+import app.revanced.patches.rif.ads.platinumAdSlotFixPatch
 import app.revanced.patches.rif.shared.RIF_COMPATIBILITY
 import org.w3c.dom.Document
 import org.w3c.dom.Element
@@ -62,7 +63,8 @@ val revancedSettingsPatch = bytecodePatch(
     description = "Initializes the ReVanced settings framework.",
 ) {
     compatibleWith(*RIF_COMPATIBILITY)
-    dependsOn(revancedSettingsResourcePatch)
+    // Platinum crash fix, carried here so it comes with any of our patches.
+    dependsOn(revancedSettingsResourcePatch, platinumAdSlotFixPatch)
     extendWith("extensions/extension.rve")
 
     execute {

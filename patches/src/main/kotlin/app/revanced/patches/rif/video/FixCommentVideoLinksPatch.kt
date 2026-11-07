@@ -5,6 +5,7 @@ import app.revanced.patcher.extensions.InstructionExtensions.instructions
 import app.revanced.patcher.fingerprint
 import app.revanced.patcher.patch.PatchException
 import app.revanced.patcher.patch.bytecodePatch
+import app.revanced.patches.rif.ads.platinumAdSlotFixPatch
 import app.revanced.patches.rif.shared.RIF_COMPATIBILITY
 import com.android.tools.smali.dexlib2.AccessFlags
 import com.android.tools.smali.dexlib2.Opcode
@@ -34,10 +35,10 @@ internal val videoInfoRequestFingerprint = fingerprint {
 @Suppress("unused")
 val fixCommentVideoLinksPatch = bytecodePatch(
     name = "Fix comment video links",
-    description = "Makes videos posted in comments play in rif's video player instead of failing " +
-        "with \"error retrieving Reddit video metadata\".",
+    description = "Makes videos posted in comments play in rif's video player instead of failing to load.",
 ) {
     compatibleWith(*RIF_COMPATIBILITY)
+    dependsOn(platinumAdSlotFixPatch)
     extendWith("extensions/extension.rve")
 
     execute {

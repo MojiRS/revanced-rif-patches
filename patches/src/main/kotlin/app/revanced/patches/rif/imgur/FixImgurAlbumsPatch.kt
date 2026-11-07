@@ -6,6 +6,7 @@ import app.revanced.patcher.extensions.InstructionExtensions.replaceInstruction
 import app.revanced.patcher.patch.BytecodePatchContext
 import app.revanced.patcher.patch.PatchException
 import app.revanced.patcher.patch.bytecodePatch
+import app.revanced.patches.rif.ads.platinumAdSlotFixPatch
 import app.revanced.patches.rif.shared.RIF_COMPATIBILITY
 import com.android.tools.smali.dexlib2.Opcode
 import com.android.tools.smali.dexlib2.iface.Method
@@ -57,10 +58,10 @@ private fun Method.isAlbumRequestHeaderHook() =
 @Suppress("unused")
 val fixImgurAlbumsPatch = bytecodePatch(
     name = "Fix imgur albums",
-    description = "Fixes imgur albums crashing or failing to load when patched alongside the " +
-        "official ReVanced rif patches.",
+    description = "Fixes imgur albums crashing or failing to load.",
 ) {
     compatibleWith(*RIF_COMPATIBILITY)
+    dependsOn(platinumAdSlotFixPatch)
 
     // The code being fixed is injected by another bundle's patch, and patch order across
     // bundles isn't guaranteed. finalize runs after every patch's execute (in Manager and

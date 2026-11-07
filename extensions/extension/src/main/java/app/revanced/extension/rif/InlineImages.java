@@ -1398,7 +1398,15 @@ public final class InlineImages {
     @android.annotation.TargetApi(28) // only called under an SDK_INT >= P check
     private static Drawable decodeAnimated(byte[] data) {
         try {
-            ImageDecoder.Source src = ImageDecoder.createSource(ByteBuffer.wrap(data));
+            // A direct buffer, not ByteBuffer.wrap(data): Android 10 reads a heap
+            // buffer through JNI when libhwui decodes later frames on its
+            // AnimatedImageTh thread, which isn't attached to the VM, and aborts
+            // (SIGABRT in ByteArrayStream::read). A direct buffer is read from its
+            // native address. Glide does the same.
+            ByteBuffer buf = ByteBuffer.allocateDirect(data.length);
+            buf.put(data);
+            buf.flip();
+            ImageDecoder.Source src = ImageDecoder.createSource(buf);
             Drawable d = ImageDecoder.decodeDrawable(src, new ImageDecoder.OnHeaderDecodedListener() {
                 @Override
                 public void onHeaderDecoded(ImageDecoder decoder, ImageDecoder.ImageInfo info,
@@ -1439,13 +1447,28 @@ public final class InlineImages {
      * Target on-screen size for an image of native size w x h. With "scale to fit"
      * on, fill the comment width (up- or down-scaling). With it off, keep native
      * size, only downscaling images wider than the comment. Height is always capped.
+     * The optional width and height limits (settings) shrink both caps; with both on,
+     * whichever is tighter for this image's shape wins, aspect ratio kept.
      */
     static int[] outSize(int w, int h) {
         if (w <= 0 || h <= 0) return new int[]{Math.max(1, w), Math.max(1, h)};
-        int targetW = targetWidth();
-        int maxH = maxHeight();
+        return fitSize(w, h, targetWidth(), maxHeight(),
+                Resources.getSystem().getDisplayMetrics().heightPixels,
+                Settings.inlineMaxWidthPercent(), Settings.inlineMaxHeightPercent(),
+                Settings.scaleInlineImages());
+    }
+
+    /**
+     * {@link #outSize} without Android: [targetW] is the full comment width, [maxH] the
+     * fixed height cap, [screenH] the screen height; a percent of 0 means that limit is off.
+     */
+    static int[] fitSize(int w, int h, int targetW, int maxH, int screenH,
+                         int widthPct, int heightPct, boolean scale) {
+        if (w <= 0 || h <= 0) return new int[]{Math.max(1, w), Math.max(1, h)};
+        if (widthPct > 0) targetW = Math.max(1, Math.round(targetW * widthPct / 100f));
+        if (heightPct > 0) maxH = Math.min(maxH, Math.max(1, Math.round(screenH * heightPct / 100f)));
         int outW, outH;
-        if (Settings.scaleInlineImages() || w > targetW) {
+        if (scale || w > targetW) {
             outW = targetW;
             outH = Math.round(h * ((float) targetW / (float) w));
         } else {

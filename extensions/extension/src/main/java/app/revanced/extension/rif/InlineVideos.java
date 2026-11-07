@@ -21,8 +21,11 @@ import android.media.AudioFocusRequest;
 import android.media.AudioManager;
 import android.media.MediaMetadataRetriever;
 import android.media.MediaPlayer;
+import android.media.PlaybackParams;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.SystemClock;
 import android.text.Spannable;
 import android.text.Spanned;
@@ -44,6 +47,7 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.lang.ref.WeakReference;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -73,8 +77,9 @@ import java.util.regex.Pattern;
  * shows controls like rif's own player's: play/pause, sound, seek, and full screen (rif's
  * player). While they're
  * hidden, touches fall through the overlay to the TextView, so long press selects the
- * comment as on images. Reddit serves a video's sound as a separate file; unmuting plays it
- * with a second MediaPlayer kept in sync.
+ * comment as on images. Reddit serves a video's sound as a separate file; unmuting downloads
+ * it (SoundCache; streaming it made the sound cut out) and plays the copy with a second
+ * MediaPlayer kept in sync.
  *
  * Playback follows the TextureView's surface: it starts when the surface is created (the
  * row is on screen) and is released when it's destroyed (scrolled off / recycled). A video
@@ -155,9 +160,13 @@ public final class InlineVideos {
         }
     }
 
-    private static final Video NONE = new Video("", "", null, false, 0, 0);
-    // Link -> resolved video (NONE = not playable), to avoid re-fetching manifests.
+    // Link -> resolved video, to avoid re-fetching manifests.
     private static final LruCache<String, Video> RESOLVED = new LruCache<>(128);
+    // Link -> when its lookup last failed (uptime ms). A failure is retried after
+    // RETRY_FAILED_MS, not remembered for the whole session: a just-posted Reddit video's
+    // manifest isn't there until Reddit has processed it, and a network error passes.
+    private static final LruCache<String, Long> FAILED = new LruCache<>(128);
+    private static final long RETRY_FAILED_MS = 2 * 60 * 1000;
 
     static boolean isVideoLink(String url) {
         return url != null && (PLAYER_LINK.matcher(url).matches() || V_REDD_IT.matcher(url).matches()
@@ -194,7 +203,12 @@ public final class InlineVideos {
 
     private static Video resolve(String url, boolean network) {
         Video cached = RESOLVED.get(url);
-        if (cached != null) return cached == NONE ? null : cached;
+        if (cached != null) return cached;
+        Long failedAt = FAILED.get(url);
+        if (failedAt != null) {
+            if (SystemClock.uptimeMillis() - failedAt < RETRY_FAILED_MS) return null;
+            FAILED.remove(url);
+        }
         Matcher m;
         if ((m = IMGUR_VIDEO.matcher(url)).matches()) {
             String mp4 = "https://i.imgur.com/" + m.group(1) + ".mp4";
@@ -214,8 +228,12 @@ public final class InlineVideos {
         } else if ((m = V_REDD_IT.matcher(url)).matches()) {
             video = fromManifest("https://v.redd.it/" + m.group(1) + "/");
         }
-        RESOLVED.put(url, video == null ? NONE : video);
-        if (video != null) InlineCache.putText("video:" + url, video.serialize());
+        if (video == null) {
+            FAILED.put(url, SystemClock.uptimeMillis());
+            return null;
+        }
+        RESOLVED.put(url, video);
+        InlineCache.putText("video:" + url, video.serialize());
         return video;
     }
 
@@ -594,7 +612,7 @@ public final class InlineVideos {
         }
     }
 
-    /** A video's MediaPlayer (plus one for its sound once unmuted), and its overlay. */
+    /** A video's MediaPlayer (plus one for its sound's local copy once unmuted), and its overlay. */
     private static final class Player {
         final VideoSpan span;
         final MediaPlayer video;
@@ -602,6 +620,7 @@ public final class InlineVideos {
         Overlay owner;
         boolean prepared;
         boolean audioPrepared;
+        boolean audioLoading; // the sound file is being downloaded (see loadSound)
         boolean rendering;
         boolean paused;
         boolean muted = true;
@@ -613,6 +632,27 @@ public final class InlineVideos {
         int seekTarget = -1;
         int queuedSeek = -1;
         boolean startAfterSeek;
+        // Sound sync (see syncAudio): the last sound seek or start, so the stall after it isn't
+        // mistaken for drift.
+        boolean audioSeeking; // a sound seek hasn't reported completion yet
+        long audioSeekAt; // uptime of the last sound seek or start
+        int audioRef; // position the sound was asked to be at then
+        boolean audioSettled; // the sound has advanced since, so its position can be trusted
+        int audioNudge; // sound playback speed: 1 faster, -1 slower, 0 normal
+        int lastSyncVideoPos = -1;
+        // Drift readings since the last sound seek (judged by their median), and whether the
+        // sound's position is reported coarsely.
+        final int[] driftWindow = new int[SoundSync.WINDOW];
+        int driftCount;
+        int lastAudioPos = -1;
+        long lastAudioAt;
+        boolean audioCoarse;
+        int audioLatency; // ms a sound seek takes to come back, measured (see syncAudio)
+        long audioMoveAt; // uptime the sound position last changed
+        boolean frozenTried; // already re-seeked a frozen sound once
+        boolean nudgeOff; // speed nudging didn't work for this player
+        long nudgeAt;
+        int nudgeDrift;
 
         Player(VideoSpan span, MediaPlayer video, Overlay owner) {
             this.span = span;
@@ -804,14 +844,14 @@ public final class InlineVideos {
                     // Repeat off: stay on the last frame, paused (play starts over).
                     player.paused = true;
                     player.ended = true;
-                    if (player.audio != null && player.audioPrepared && player.audio.isPlaying()) player.audio.pause();
+                    pauseAudio(player);
                     overlayChanged(player);
                     return;
                 }
                 seek(player, 0);
                 if (!player.paused) {
                     m.start();
-                    if (player.audio != null && player.audioPrepared) player.audio.start();
+                    if (player.audio != null && player.audioPrepared && !player.muted) player.audio.start();
                 }
             });
             mp.setOnErrorListener((m, what, extra) -> {
@@ -848,6 +888,7 @@ public final class InlineVideos {
         }
         player.audio = null;
         player.prepared = false;
+        stopSyncIfIdle();
         overlayChanged(player);
         if (player.owner != null) invalidateText(player.owner);
     }
@@ -881,12 +922,13 @@ public final class InlineVideos {
         try {
             if (paused) {
                 player.video.pause();
-                if (player.audio != null && player.audioPrepared && player.audio.isPlaying()) player.audio.pause();
+                pauseAudio(player);
             } else {
                 player.video.start();
-                if (player.audio != null && player.audioPrepared) {
-                    player.audio.seekTo(player.position());
+                if (player.audio != null && player.audioPrepared && !player.muted) {
+                    seekAudio(player, player.position() + player.audioLatency);
                     player.audio.start();
+                    startSync();
                 }
             }
         } catch (Throwable t) {
@@ -924,7 +966,7 @@ public final class InlineVideos {
             } else {
                 player.video.seekTo(ms);
             }
-            if (player.audio != null && player.audioPrepared) player.audio.seekTo(ms);
+            if (player.audio != null && player.audioPrepared) seekAudio(player, ms);
         } catch (Throwable t) {
             player.seeking = false;
             player.seekTarget = -1;
@@ -966,27 +1008,15 @@ public final class InlineVideos {
             if (!player.separateAudio()) {
                 player.video.setVolume(muted ? 0f : 1f, muted ? 0f : 1f);
             } else if (muted) {
-                if (player.audio != null && player.audioPrepared && player.audio.isPlaying()) player.audio.pause();
+                pauseAudio(player);
             } else if (player.audio == null && tv != null) {
-                MediaPlayer audio = new MediaPlayer();
-                player.audio = audio;
-                player.audioPrepared = false;
-                audio.setDataSource(tv.getContext(), Uri.parse(player.span.video.audioUrl), headers());
-                audio.setAudioAttributes(MEDIA);
-                audio.setOnPreparedListener(m -> {
-                    if (player.audio != m) return;
-                    player.audioPrepared = true;
-                    m.seekTo(player.position());
-                    if (!player.muted && !player.paused) m.start();
-                });
-                audio.setOnErrorListener((m, what, extra) -> {
-                    Log.w(TAG, "sound error " + what + "/" + extra + ": " + player.span.video.audioUrl);
-                    return true;
-                });
-                audio.prepareAsync();
+                loadSound(player, tv.getContext().getApplicationContext());
             } else if (player.audio != null && player.audioPrepared) {
-                player.audio.seekTo(player.position());
-                if (!player.paused) player.audio.start();
+                seekAudio(player, player.position() + player.audioLatency);
+                if (!player.paused) {
+                    player.audio.start();
+                    startSync();
+                }
             }
         } catch (Throwable t) {
             Log.w(TAG, "mute toggle failed", t);
@@ -994,13 +1024,248 @@ public final class InlineVideos {
         overlayChanged(player);
     }
 
-    /** Keeps a separate sound player within ~0.2 s of the video. */
-    private static void syncAudio(Player player) {
-        if (player.audio == null || !player.audioPrepared || player.muted || player.paused) return;
+    /**
+     * Gets the sound going for an unmuted player: from the local copy of its sound file (see
+     * SoundCache) if there is one, else downloading it first (the player stays unmuted, the
+     * sound arrives shortly). If the download fails, streams the sound instead.
+     */
+    private static void loadSound(Player player, Context ctx) {
+        if (player.audioLoading) return;
+        File dir = SoundCache.dir(ctx.getCacheDir());
+        File local = dir == null ? null : SoundCache.cached(dir, player.span.video.audioUrl);
+        if (local != null || dir == null) {
+            startSound(player, ctx, local);
+            return;
+        }
+        player.audioLoading = true;
+        SoundCache.download(dir, player.span.video.audioUrl, InlineImages.USER_AGENT, (file, error) -> {
+            if (file == null) Log.w(TAG, "sound download failed (" + error + "); streaming");
+            InlineImages.MAIN.post(() -> {
+                player.audioLoading = false;
+                try {
+                    // Muted meanwhile: the file is kept, the next unmute uses it.
+                    if (PLAYERS.get(player.span) != player || player.muted || player.audio != null) return;
+                    startSound(player, ctx, file);
+                } catch (Throwable t) {
+                    Log.w(TAG, "sound start failed", t);
+                }
+            });
+        });
+    }
+
+    /** Creates and prepares the sound player, on [file] or (null) streaming the sound URL. */
+    private static void startSound(Player player, Context ctx, File file) {
         try {
-            int drift = player.audio.getCurrentPosition() - player.position();
-            if (Math.abs(drift) > 200) player.audio.seekTo(player.position());
-        } catch (Throwable ignored) {
+            MediaPlayer audio = new MediaPlayer();
+            player.audio = audio;
+            player.audioPrepared = false;
+            if (file != null) {
+                audio.setDataSource(file.getAbsolutePath());
+            } else {
+                audio.setDataSource(ctx, Uri.parse(player.span.video.audioUrl), headers());
+            }
+            audio.setAudioAttributes(MEDIA);
+            audio.setOnPreparedListener(m -> {
+                if (player.audio != m) return;
+                player.audioPrepared = true;
+                seekAudio(player, player.position() + player.audioLatency);
+                if (!player.muted && !player.paused) {
+                    m.start();
+                    startSync();
+                }
+            });
+            audio.setOnSeekCompleteListener(m -> {
+                if (player.audio == m) player.audioSeeking = false;
+            });
+            audio.setOnErrorListener((m, what, extra) -> {
+                Log.w(TAG, "sound error " + what + "/" + extra + ": " + player.span.video.audioUrl);
+                return true;
+            });
+            audio.prepareAsync();
+        } catch (Throwable t) {
+            Log.w(TAG, "mute toggle failed", t);
+        }
+    }
+
+    // ---- sound sync ------------------------------------------------------------------
+
+    private static final long SYNC_MS = 300;
+    private static Handler syncHandler;
+    private static boolean syncScheduled;
+    private static boolean nudgeFailed;
+
+    private static final Runnable SYNC_TICK = new Runnable() {
+        @Override
+        public void run() {
+            syncScheduled = false;
+            try {
+                boolean again = false;
+                for (Player player : new ArrayList<>(PLAYERS.values())) {
+                    if (!needsSync(player)) continue;
+                    again = true;
+                    syncAudio(player);
+                }
+                if (again) startSync();
+            } catch (Throwable t) {
+                Log.w(TAG, "sound sync failed", t);
+            }
+        }
+    };
+
+    private static boolean needsSync(Player player) {
+        return player.audio != null && player.audioPrepared && !player.muted && !player.paused;
+    }
+
+    /** Starts the sound sync tick (its own, so it runs with the controls hidden). Idempotent. */
+    private static void startSync() {
+        if (syncScheduled) return;
+        if (syncHandler == null) syncHandler = new Handler(Looper.getMainLooper());
+        syncScheduled = true;
+        syncHandler.postDelayed(SYNC_TICK, SYNC_MS);
+    }
+
+    /** Drops a pending tick once no player has sound playing. */
+    private static void stopSyncIfIdle() {
+        if (!syncScheduled || syncHandler == null) return;
+        for (Player player : PLAYERS.values()) if (needsSync(player)) return;
+        syncHandler.removeCallbacks(SYNC_TICK);
+        syncScheduled = false;
+    }
+
+    /** Seeks the sound player, noting when, so the stall after it isn't judged as drift. */
+    private static void seekAudio(Player player, int ms) {
+        player.audioSeeking = true;
+        player.audioSeekAt = SystemClock.uptimeMillis();
+        player.audioRef = ms;
+        player.audioSettled = false;
+        player.driftCount = 0;
+        player.lastAudioPos = -1;
+        player.audioMoveAt = player.audioSeekAt;
+        player.audio.seekTo(ms);
+    }
+
+    private static void pauseAudio(Player player) {
+        if (player.audio == null || !player.audioPrepared || !player.audio.isPlaying()) return;
+        setAudioSpeed(player, 0); // back to normal speed while it is playing (a paused one could restart)
+        player.audio.pause();
+    }
+
+    /** Sound speed: 1 = 3% faster, -1 = 3% slower, 0 = normal. API 23+; a no-op below. */
+    private static void setAudioSpeed(Player player, int nudge) {
+        // Only while playing: setting the speed on a stopped player can start it on some versions.
+        if (player.audio == null || player.audioNudge == nudge || !player.audio.isPlaying()) return;
+        player.audioNudge = nudge;
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M || nudgeFailed) return;
+        try {
+            applySpeed(player.audio, nudge == 0 ? 1f : nudge > 0 ? SoundSync.FAST : SoundSync.SLOW);
+        } catch (Throwable t) {
+            nudgeFailed = true;
+            Log.w(TAG, "sound speed change failed; sync will only re-seek", t);
+        }
+    }
+
+    @android.annotation.TargetApi(Build.VERSION_CODES.M) // only called under an SDK_INT >= M check
+    private static void applySpeed(MediaPlayer audio, float speed) {
+        audio.setPlaybackParams(new PlaybackParams().setSpeed(speed));
+    }
+
+    /**
+     * Keeps a separate sound player in step with the video (see {@link SoundSync}): small drift
+     * is nudged away with the sound's speed, a really large one fixed with a seek, but never
+     * while a sound seek is pending, soon after one, or before the sound has started moving
+     * again. Seeking makes the sound player refill and stall, so judging it then would seek
+     * again, and again.
+     */
+    private static void syncAudio(Player player) {
+        if (!needsSync(player)) return;
+        try {
+            long now = SystemClock.uptimeMillis();
+            int videoPos = player.position();
+            boolean videoMoved = videoPos != player.lastSyncVideoPos;
+            player.lastSyncVideoPos = videoPos;
+            if (player.seeking || !videoMoved) return; // a buffering picture isn't drift
+            if (player.audioSeeking && now - player.audioSeekAt < SoundSync.SEEK_PENDING_MAX_MS) return;
+            int audioPos = player.audio.getCurrentPosition();
+            if (!player.audioSettled) {
+                boolean moved = player.audio.isPlaying() && audioPos - player.audioRef >= SoundSync.SETTLED_ADVANCE_MS;
+                if (!moved && now - player.audioSeekAt < SoundSync.SETTLE_MAX_MS) return;
+                if (moved) {
+                    player.frozenTried = false; // playing again after a seek
+                    // How long a sound seek takes to come back: later seeks aim that far ahead of
+                    // the video, so the sound arrives in step instead of that far behind (which,
+                    // on a slow device, would be over the limit again, and again).
+                    int took = (int) Math.min(SoundSync.LATENCY_MAX_MS,
+                            Math.max(0, now - player.audioSeekAt - SYNC_MS / 2));
+                    // Smoothed from zero, so one slow seek never makes the lead overshoot.
+                    player.audioLatency = (player.audioLatency + took) / 2;
+                }
+                player.audioSettled = true;
+                player.audioMoveAt = now;
+            }
+            // A sound position that hasn't moved since the last tick is stalled (buffering or a
+            // coarse clock): a seek wouldn't help, and would only restart the refill. Wait, and
+            // if it stays frozen for good, try one seek and then leave it.
+            if (audioPos == player.lastAudioPos) {
+                if (!player.frozenTried && now - player.audioMoveAt > SoundSync.FROZEN_MS) {
+                    player.frozenTried = true;
+                    Log.i(TAG, "sound frozen at " + audioPos + " ms; one re-seek");
+                    seekAudio(player, videoPos + player.audioLatency);
+                }
+                return;
+            }
+            player.audioMoveAt = now;
+            // A position that doesn't advance like the clock (coarse steps, jumps) can't be
+            // trusted reading by reading: widen the limit and don't nudge.
+            if (player.lastAudioPos >= 0
+                    && Math.abs((audioPos - player.lastAudioPos) - (now - player.lastAudioAt)) > SoundSync.COARSE_MS) {
+                if (!player.audioCoarse) Log.i(TAG, "sound position is coarse; sync widened");
+                player.audioCoarse = true;
+            }
+            player.lastAudioPos = audioPos;
+            player.lastAudioAt = now;
+            if (player.driftCount == player.driftWindow.length) {
+                System.arraycopy(player.driftWindow, 1, player.driftWindow, 0, player.driftCount - 1);
+                player.driftCount--;
+            }
+            player.driftWindow[player.driftCount++] = audioPos - videoPos;
+            if (player.driftCount < SoundSync.MIN_SAMPLES) return;
+            int drift = SoundSync.median(player.driftWindow, player.driftCount);
+            // A nudge that isn't bringing the drift down is given up on for this player.
+            if (player.audioNudge != 0 && now - player.nudgeAt > SoundSync.NUDGE_TRIAL_MS
+                    && Math.abs(drift) > Math.abs(player.nudgeDrift) - SoundSync.NUDGE_PROGRESS_MS) {
+                player.nudgeOff = true;
+                setAudioSpeed(player, 0);
+                Log.i(TAG, "sound speed nudge has no effect; off for this video");
+            }
+            boolean canNudge = Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !nudgeFailed
+                    && !player.nudgeOff && !player.audioCoarse && player.audio.isPlaying();
+            switch (SoundSync.decide(drift, player.audioNudge, canNudge,
+                    now - player.audioSeekAt < SoundSync.COOLDOWN_MS + 2L * player.audioLatency,
+                    player.audioCoarse ? SoundSync.RESEEK_DRIFT_COARSE_MS : SoundSync.RESEEK_DRIFT_MS)) {
+                case SoundSync.RESEEK:
+                    Log.i(TAG, "sound re-seek: sound " + audioPos + " ms, video " + videoPos + " ms, drift "
+                            + drift + " ms (median of " + player.driftCount + ")");
+                    setAudioSpeed(player, 0);
+                    seekAudio(player, videoPos + player.audioLatency);
+                    break;
+                case SoundSync.SPEED_UP:
+                    setAudioSpeed(player, 1);
+                    player.nudgeAt = now;
+                    player.nudgeDrift = drift;
+                    break;
+                case SoundSync.SLOW_DOWN:
+                    setAudioSpeed(player, -1);
+                    player.nudgeAt = now;
+                    player.nudgeDrift = drift;
+                    break;
+                case SoundSync.RESET_SPEED:
+                    setAudioSpeed(player, 0);
+                    break;
+                default:
+                    break;
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "sound sync failed", t);
         }
     }
 
@@ -1210,11 +1475,12 @@ public final class InlineVideos {
             setPaused(player, true);
             if (!player.muted) setMuted(player, true);
         }
-        String url = overlay.span.link.getURL();
         try {
-            if (PLAYER_LINK.matcher(url).matches()) {
-                // rif opens Reddit video player links in its player when they come in as
-                // a VIEW intent (as its own link-tracking activity does).
+            String url = playerUrl(overlay.span);
+            if (url != null) {
+                // rif opens video URLs in its player when they come in as a VIEW intent (as
+                // its own link-tracking activity does), without the link sheet link.onClick
+                // would show.
                 Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
                 intent.setComponent(new ComponentName(tv.getContext(), RIF_MAIN_ACTIVITY));
                 tv.getContext().startActivity(intent);
@@ -1224,6 +1490,21 @@ public final class InlineVideos {
             Log.w(TAG, "opening the player failed", t);
         }
         overlay.span.link.onClick(tv); // rif's usual handling of the link
+    }
+
+    /**
+     * The URL rif's player opens for [span]'s video, null if there's none: the link itself
+     * for Reddit videos, the resolved .mp4 for imgur (the link may be an album, or a .gifv).
+     */
+    static String playerUrl(VideoSpan span) {
+        String url = span.link.getURL();
+        if (url != null && (PLAYER_LINK.matcher(url).matches() || V_REDD_IT.matcher(url).matches())) {
+            return url;
+        }
+        String mp4 = span.video == null ? null : span.video.url;
+        if (mp4 != null && IMGUR_VIDEO.matcher(mp4).matches()) return mp4;
+        if (url != null && IMGUR_VIDEO.matcher(url).matches()) return url;
+        return null;
     }
 
     // ---- controls ---------------------------------------------------------------------
@@ -1285,10 +1566,7 @@ public final class InlineVideos {
             public void run() {
                 if (!shown) return;
                 Player player = PLAYERS.get(overlay.span);
-                if (player != null) {
-                    syncAudio(player);
-                    watch(player);
-                }
+                if (player != null) watch(player);
                 refresh();
                 postDelayed(this, 250);
             }
@@ -1330,11 +1608,24 @@ public final class InlineVideos {
             bar.setPadding(0, Math.round(dp(8)), 0, Math.round(dp(4)));
             bar.setClickable(true); // taps on the bar itself don't hide it
 
-            LinearLayout buttons = new LinearLayout(ctx);
+            int buttonW = rifDimen(ctx, "exo_media_button_width", 71);
+            // A video narrowed by the width/height limits can be narrower than four
+            // buttons at rif's width: shrink them evenly to fit.
+            LinearLayout buttons = new LinearLayout(ctx) {
+                @Override
+                protected void onMeasure(int widthSpec, int heightSpec) {
+                    int n = getChildCount();
+                    int avail = MeasureSpec.getSize(widthSpec);
+                    if (n > 0 && MeasureSpec.getMode(widthSpec) != MeasureSpec.UNSPECIFIED) {
+                        int w = Math.max(1, Math.min(buttonW, avail / n));
+                        for (int i = 0; i < n; i++) getChildAt(i).getLayoutParams().width = w;
+                    }
+                    super.onMeasure(widthSpec, heightSpec);
+                }
+            };
             buttons.setOrientation(LinearLayout.HORIZONTAL);
             buttons.setGravity(Gravity.CENTER);
             buttons.setPadding(0, Math.round(dp(4)), 0, 0);
-            int buttonW = rifDimen(ctx, "exo_media_button_width", 71);
             int buttonH = rifDimen(ctx, "exo_media_button_height", 52);
             // Same buttons and order as rif's player: previous (back to the start),
             // play/pause, repeat, sound.
@@ -1384,7 +1675,19 @@ public final class InlineVideos {
             bar.addView(buttons, new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-            LinearLayout progress = new LinearLayout(ctx);
+            // On a narrow video the two times and full screen button leave the seek bar
+            // a sliver: drop the duration there.
+            final int narrow = Math.round(dp(200));
+            LinearLayout progress = new LinearLayout(ctx) {
+                @Override
+                protected void onMeasure(int widthSpec, int heightSpec) {
+                    if (duration != null) {
+                        int vis = MeasureSpec.getSize(widthSpec) < narrow ? GONE : VISIBLE;
+                        if (duration.getVisibility() != vis) duration.setVisibility(vis);
+                    }
+                    super.onMeasure(widthSpec, heightSpec);
+                }
+            };
             progress.setOrientation(LinearLayout.HORIZONTAL);
             progress.setGravity(Gravity.CENTER_VERTICAL);
             progress.setPadding(Math.round(dp(10)), 0, Math.round(dp(4)), 0);

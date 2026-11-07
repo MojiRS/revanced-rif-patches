@@ -93,4 +93,45 @@ public class InlineImagesTest {
         assertFalse(InlineImages.isHideableLinkText("gif"));
         assertFalse(InlineImages.isHideableLinkText(null));
     }
+
+    // fitSize(): screen 1000 x 2000, comment width 1000, fixed height cap 2000.
+    private static int[] fit(int w, int h, int widthPct, int heightPct, boolean scale) {
+        return InlineImages.fitSize(w, h, 1000, 2000, 2000, widthPct, heightPct, scale);
+    }
+
+    @Test
+    public void noLimitsKeepsOldSizing() {
+        assertArrayEquals(new int[]{1000, 500}, fit(400, 200, 0, 0, true));
+        assertArrayEquals(new int[]{400, 200}, fit(400, 200, 0, 0, false));
+        assertArrayEquals(new int[]{500, 2000}, fit(1000, 4000, 0, 0, true));
+    }
+
+    @Test
+    public void widthLimitScalesToTheCappedWidth() {
+        assertArrayEquals(new int[]{500, 250}, fit(400, 200, 50, 0, true));
+        assertArrayEquals(new int[]{400, 200}, fit(400, 200, 50, 0, false));
+        assertArrayEquals(new int[]{500, 250}, fit(1600, 800, 50, 0, false));
+    }
+
+    @Test
+    public void heightLimitIsAPercentOfScreenHeight() {
+        // A tall screenshot at full width would be 2000 tall; 25% of 2000 = 500.
+        assertArrayEquals(new int[]{250, 500}, fit(900, 1800, 0, 25, true));
+    }
+
+    @Test
+    public void bothLimitsTheTighterWins() {
+        // Wide image: the width limit binds (500 x 250 is under 1000 tall).
+        assertArrayEquals(new int[]{500, 250}, fit(1600, 800, 50, 50, true));
+        // Tall image: 500 wide would be 1000 tall, so the 30% height cap (600) binds.
+        assertArrayEquals(new int[]{300, 600}, fit(900, 1800, 50, 30, true));
+    }
+
+    @Test
+    public void heightLimitNeverLoosensTheFixedCap() {
+        assertArrayEquals(new int[]{500, 2000}, fit(1000, 4000, 0, 100, true));
+        // Fixed cap 1000 is tighter than 100% of a 2000 screen: it stays.
+        assertArrayEquals(new int[]{250, 1000},
+                InlineImages.fitSize(1000, 4000, 1000, 1000, 2000, 0, 100, true));
+    }
 }
