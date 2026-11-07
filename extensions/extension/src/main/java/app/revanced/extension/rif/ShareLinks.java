@@ -10,6 +10,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
 
+import java.io.IOException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.net.HttpURLConnection;
@@ -488,8 +489,25 @@ public final class ShareLinks {
         return null;
     }
 
-    /** The i.redd.it image a Matrix media link redirects to, or null if anything is off. */
+    /**
+     * The i.redd.it image a Matrix media link redirects to, or null if anything is off. An
+     * http:// link is tried as https:// first (plain http redirects to an internal host); a
+     * connection error is retried once, an answer is final.
+     */
     static String resolveMatrixMedia(String url) {
+        for (String attempt : InlineImages.attempts(url)) {
+            try {
+                return resolveMatrixMediaOnce(attempt);
+            } catch (IOException e) {
+                // next attempt
+            } catch (Throwable t) {
+                break;
+            }
+        }
+        return null;
+    }
+
+    private static String resolveMatrixMediaOnce(String url) throws IOException {
         HttpURLConnection c = null;
         try {
             c = (HttpURLConnection) new URL(url).openConnection();
@@ -504,8 +522,6 @@ public final class ShareLinks {
             if (location == null) return null;
             URL next = new URL(new URL(url), location);
             return isRedditMedia(next.getHost()) ? next.toString() : null;
-        } catch (Throwable t) {
-            return null;
         } finally {
             if (c != null) c.disconnect();
         }
