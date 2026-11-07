@@ -18,8 +18,7 @@ internal val galleryParserFingerprint = fingerprint {
 @Suppress("unused")
 val repairBrokenGalleryImagesPatch = bytecodePatch(
     name = "Repair broken gallery images",
-    description = "Shows the images of Reddit galleries that fail to load with \"Error loading gallery\" " +
-        "because Reddit marks some of their images as failed.",
+    description = "Shows the images of galleries that fail to load because Reddit marks some of their images as failed.",
 ) {
     compatibleWith(*RIF_COMPATIBILITY)
     extendWith("extensions/extension.rve")

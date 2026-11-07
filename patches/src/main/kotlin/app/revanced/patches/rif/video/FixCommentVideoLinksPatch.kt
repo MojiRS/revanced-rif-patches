@@ -34,8 +34,7 @@ internal val videoInfoRequestFingerprint = fingerprint {
 @Suppress("unused")
 val fixCommentVideoLinksPatch = bytecodePatch(
     name = "Fix comment video links",
-    description = "Makes videos posted in comments play in rif's video player instead of failing " +
-        "with \"error retrieving Reddit video metadata\".",
+    description = "Makes videos posted in comments play in rif's video player instead of failing to load.",
 ) {
     compatibleWith(*RIF_COMPATIBILITY)
     extendWith("extensions/extension.rve")

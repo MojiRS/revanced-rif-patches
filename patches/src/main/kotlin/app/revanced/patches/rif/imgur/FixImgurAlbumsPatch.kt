@@ -57,8 +57,7 @@ private fun Method.isAlbumRequestHeaderHook() =
 @Suppress("unused")
 val fixImgurAlbumsPatch = bytecodePatch(
     name = "Fix imgur albums",
-    description = "Fixes imgur albums crashing or failing to load when patched alongside the " +
-        "official ReVanced rif patches.",
+    description = "Fixes imgur albums crashing or failing to load.",
 ) {
     compatibleWith(*RIF_COMPATIBILITY)
 

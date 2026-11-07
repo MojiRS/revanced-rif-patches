@@ -35,7 +35,7 @@ internal val dialogSoftInputFingerprint = fingerprint {
 @Suppress("unused")
 val keepReplyBoxAboveKeyboardPatch = bytecodePatch(
     name = "Keep reply box above keyboard",
-    description = "Keeps the text you type in the reply box above the keyboard.",
+    description = "Keeps the reply box unobscured above the keyboard.",
 ) {
     compatibleWith(*RIF_COMPATIBILITY)
     extendWith("extensions/extension.rve")

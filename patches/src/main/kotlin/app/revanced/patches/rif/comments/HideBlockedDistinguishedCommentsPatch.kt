@@ -69,7 +69,7 @@ internal val commentFilterFingerprint = fingerprint {
 @Suppress("unused")
 val hideBlockedDistinguishedCommentsPatch = bytecodePatch(
     name = "Hide blocked mod comments",
-    description = "Adds a setting to hide distinguished (mod and admin) comments from blocked users.",
+    description = "Adds a setting to hide mod comments from blocked users. Off by default.",
 ) {
     compatibleWith(*RIF_COMPATIBILITY)
     dependsOn(hideBlockedCommentsSettingsResourcePatch, revancedSettingsPatch)
