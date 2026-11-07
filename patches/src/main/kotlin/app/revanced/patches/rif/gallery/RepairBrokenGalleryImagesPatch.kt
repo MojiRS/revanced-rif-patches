@@ -3,6 +3,7 @@ package app.revanced.patches.rif.gallery
 import app.revanced.patcher.extensions.InstructionExtensions.addInstructions
 import app.revanced.patcher.fingerprint
 import app.revanced.patcher.patch.bytecodePatch
+import app.revanced.patches.rif.ads.platinumAdSlotFixPatch
 import app.revanced.patches.rif.shared.RIF_COMPATIBILITY
 
 private const val EXTENSION = "Lapp/revanced/extension/rif/GalleryRepair;"
@@ -21,6 +22,7 @@ val repairBrokenGalleryImagesPatch = bytecodePatch(
     description = "Shows the images of galleries that fail to load because Reddit marks some of their images as failed.",
 ) {
     compatibleWith(*RIF_COMPATIBILITY)
+    dependsOn(platinumAdSlotFixPatch)
     extendWith("extensions/extension.rve")
 
     execute {

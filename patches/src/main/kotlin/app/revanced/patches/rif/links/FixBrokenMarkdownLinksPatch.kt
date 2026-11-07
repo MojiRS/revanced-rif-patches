@@ -5,6 +5,7 @@ import app.revanced.patcher.extensions.InstructionExtensions.instructions
 import app.revanced.patcher.fingerprint
 import app.revanced.patcher.patch.PatchException
 import app.revanced.patcher.patch.bytecodePatch
+import app.revanced.patches.rif.ads.platinumAdSlotFixPatch
 import app.revanced.patches.rif.shared.RIF_BUILDS
 import app.revanced.patches.rif.shared.RIF_COMPATIBILITY
 import com.android.tools.smali.dexlib2.Opcode
@@ -45,6 +46,7 @@ val fixBrokenMarkdownLinksPatch = bytecodePatch(
     description = "Shows links like [name](u/name) as links instead of raw text.",
 ) {
     compatibleWith(*RIF_COMPATIBILITY)
+    dependsOn(platinumAdSlotFixPatch)
     extendWith("extensions/extension.rve")
 
     execute {

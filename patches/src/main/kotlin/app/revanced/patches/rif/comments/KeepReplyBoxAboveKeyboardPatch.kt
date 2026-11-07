@@ -5,6 +5,7 @@ import app.revanced.patcher.extensions.InstructionExtensions.instructions
 import app.revanced.patcher.fingerprint
 import app.revanced.patcher.patch.PatchException
 import app.revanced.patcher.patch.bytecodePatch
+import app.revanced.patches.rif.ads.platinumAdSlotFixPatch
 import app.revanced.patches.rif.shared.RIF_COMPATIBILITY
 import com.android.tools.smali.dexlib2.AccessFlags
 import com.android.tools.smali.dexlib2.Opcode
@@ -38,6 +39,7 @@ val keepReplyBoxAboveKeyboardPatch = bytecodePatch(
     description = "Keeps the reply box unobscured above the keyboard.",
 ) {
     compatibleWith(*RIF_COMPATIBILITY)
+    dependsOn(platinumAdSlotFixPatch)
     extendWith("extensions/extension.rve")
 
     execute {

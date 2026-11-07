@@ -26,8 +26,9 @@ private val freeAdsPackageFingerprint = fingerprint {
 }
 
 /**
- * Never insert the native-ad feed row on Platinum. Hidden (no name); applied through the
- * shared settings patch, so every Platinum patch brings it. No-op on free.
+ * Never insert the native-ad feed row on Platinum. Hidden (no name); every public patch
+ * depends on it, directly or through the shared settings patch, so any Platinum patch brings
+ * it. No-op on free.
  */
 internal val platinumAdSlotFixPatch = bytecodePatch(
     description = "Stops Platinum inserting a native-ad feed row it can't show.",
