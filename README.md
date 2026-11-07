@@ -18,6 +18,7 @@ A bundle is a container for many small, independently-toggleable patches. Option
 | **Repair broken gallery images** | Shows the images of Reddit galleries that fail to load with "Error loading gallery" because Reddit marks some of their images as failed. |
 | **Keep reply box above keyboard** | Keeps the text you type in the reply box above the keyboard. |
 | **Fix broken markdown links** | Shows links like `[name](u/name)` as links instead of raw text. |
+| **Hide blocked mod comments** | Adds a setting to hide distinguished (mod and admin) comments from blocked users. |
 
 For how each patch works and its settings, see [PATCHES.md](PATCHES.md).
 
