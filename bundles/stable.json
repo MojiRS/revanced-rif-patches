@@ -1,7 +1,7 @@
 {
-  "created_at": "2026-11-01T00:33:34",
-  "description": "### Fixes\n- **Fix share links**: matrix.redditspace.com image links open in rif's image viewer instead of the browser.\n- **Inline images**: those links, and imgflip links, now show as images in comments.\n\n### Adding this bundle\nIn ReVanced Manager, add `https://raw.githubusercontent.com/MojiRS/revanced-rif-patches/main/bundles/stable.json` as a remote patch source. Requires rif is fun **5.6.22** (free or Golden Platinum), patched together with the official ReVanced bundle's **Spoof client** patch.\n",
-  "download_url": "https://github.com/MojiRS/revanced-rif-patches/releases/download/v1.7.2/patches.rvp",
+  "created_at": "2026-11-08T16:02:09",
+  "description": "### New\n- **Repair broken gallery images**: galleries that fail to load because Reddit marks some images as failed show their images again.\n- **Keep reply box above keyboard**: the comment reply box, including its buttons, stays visible above the keyboard.\n- **Fix broken markdown links**: links like `[name](u/name)` show as links instead of raw text.\n- **Hide blocked mod comments**: a setting to hide mod comments (such as pinned bot comments) from users you've blocked. Off by default.\n- **Inline comment images**: optional maximum width and height for inline images and videos (Settings \u2192 ReVanced). (#3)\n\n### Fixes\n- rif golden platinum no longer crashes when refreshing the front page.\n- Inline video sound no longer cuts out, and muted videos stay silent when they loop.\n- Comment videos that failed to load are retried instead of staying a plain link.\n- The full-screen button on videos no longer shows a link popup.\n- Inline GIFs no longer crash rif on Android 10. (#4)\n- `http://` Matrix image links show inline.\n\nRequires rif is fun **5.6.22** (free or Golden Platinum), patched together with the official ReVanced bundle's **Spoof client** patch. [notBrian2/revanced-rif-fixes](https://github.com/notBrian2/revanced-rif-fixes) is recommended alongside it.\n",
+  "download_url": "https://github.com/MojiRS/revanced-rif-patches/releases/download/v1.8.0/patches.rvp",
   "signature_download_url": "N/A",
-  "version": "v1.7.2"
+  "version": "v1.8.0"
 }
