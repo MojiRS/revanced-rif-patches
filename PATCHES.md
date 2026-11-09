@@ -124,3 +124,13 @@ Adds a setting to hide distinguished (mod and admin) comments from blocked users
 rif already hides a blocked user's comments, but not a distinguished one such as a moderator bot's pinned comment. With **Hide blocked users' mod comments** on (Settings → ReVanced → Blocked users; off by default), those comments disappear too, together with the replies under them, like rif's own blocked-user filter. A comment opened on its own (its permalink) and comments in subreddits you moderate still show.
 
 How it works: Reddit does not mark a blocked mod's comment as a blocked author's; it sends `unrepliable_reason: NEAR_BLOCKED` instead. A hook in rif's blocked-comment filter asks the extension first, passing that flag and the `distinguished` value. When the setting is on and both apply, rif goes straight to its own permalink and moderator checks.
+
+## Reddit image hosting
+
+Uploads images and GIFs for posts to Reddit instead of imgur, and posts them as native image posts.
+
+rif's Image tab on the Submit screen uploaded to imgur, which no longer works for everyone. With this patch the tab works as before (pick, confirm, progress, submit), but the file goes to Reddit's own hosting and the post is a real image post (`i.redd.it`), not a link. The Image tab's texts no longer mention imgur. Images over 20 MB are still shrunk first; GIFs are never resized (Reddit's own size limit applies). One image per post. If the subreddit doesn't allow image posts, Reddit's message is shown and the form stays filled.
+
+No settings.
+
+How it works: four hooks. The body of rif's imgur uploader task is replaced by a call into the extension, which asks Reddit for an upload lease (`/api/media/asset.json`, with rif's own sign-in token), posts the file to it and returns the asset URL for rif's URL field. The 10 MB checks (the confirm branch, the dialog's warning, the size state and the resize target) become 20 MB, and for GIFs "needs resize" is always false. `SubmitTask`'s form parameters turn a link post to one of our asset URLs into `kind=image`; an asset that was already posted once (a retry after an error) is uploaded again, because a reused asset makes a broken post. Reddit answers an image post with no post in it, so the reply is read, the user's newest posts are polled for the `i.redd.it` id (up to 30 s) and rif gets a normal reply with the new post's address.
