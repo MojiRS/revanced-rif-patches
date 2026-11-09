@@ -2,8 +2,17 @@ package app.revanced.extension.rif;
 
 import android.accounts.Account;
 import android.accounts.AccountManager;
+import android.annotation.TargetApi;
+import android.content.ContentResolver;
 import android.content.Context;
+import android.content.Intent;
+import android.content.res.AssetFileDescriptor;
+import android.database.Cursor;
+import android.graphics.Bitmap;
+import android.media.MediaMetadataRetriever;
 import android.net.Uri;
+import android.os.Build;
+import android.provider.OpenableColumns;
 import android.util.Log;
 
 import androidx.core.util.c;
@@ -24,26 +33,32 @@ import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
 /**
- * "Reddit image hosting": the Submit screen's Image tab uploads to Reddit instead of imgur and
- * submits a native image post.
+ * "Reddit image hosting": the Submit screen's Image ("media") tab uploads to Reddit instead of
+ * imgur and submits a native image or video post.
  *
  * rif's flow stays as it is (pick, size dialog, progress bar, URL field, submit as a link post);
  * hooks swap the parts underneath:
  * <ul>
+ * <li>{@link #pickerIntent}: the picker offers videos as well as images.</li>
+ * <li>{@link #videoPreview}, {@link #isVideo}: the confirm dialog and form thumbnail show a frame
+ * of a video (rif's decoder only knows images).</li>
  * <li>{@link #upload}: replaces the body of rif's uploader task. Reddit's media lease
  * (/api/media/asset.json), then a multipart POST to S3. Returns the asset URL, which rif puts in
- * the URL field.</li>
- * <li>{@link #needsResize}: GIFs are never resized, stills only above 20 MB.</li>
+ * the URL field. A video is streamed as it is (never re-encoded) and gets a JPEG poster
+ * uploaded as a second asset.</li>
+ * <li>{@link #needsResize}: GIFs and videos are never resized, stills only above 20 MB.</li>
  * <li>{@link #fixParams}: SubmitTask's form parameters; a link post to one of our asset URLs
- * becomes kind=image (an asset that was already posted is uploaded again first).</li>
- * <li>{@link #wrapResponse}: Reddit answers an image post with a websocket URL and no post; the
- * post is looked up on the user's submitted page so rif can open it.</li>
+ * becomes kind=image (kind=video plus video_poster_url for a video); an asset that was already
+ * posted is uploaded again first.</li>
+ * <li>{@link #wrapResponse}: Reddit answers an image or video post with a websocket URL and no
+ * post; the post is looked up on the user's submitted page so rif can open it.</li>
  * </ul>
  */
 public final class ImageHosting {
@@ -56,9 +71,19 @@ public final class ImageHosting {
     /** Largest still image sent as is (bytes); larger ones are resized to this. */
     static final long MAX_STILL_BYTES = 20L * 1024 * 1024;
 
+    /** Reddit's video upload limit (the lease policy's content-length-range upper bound). */
+    static final long MAX_VIDEO_BYTES = 1024L * 1024 * 1024;
+
+    /** Longest side of the poster JPEG sent with a video. */
+    private static final int POSTER_MAX_PX = 1280;
+
     private static final int MAX_ASSETS = 8;
     private static final long POLL_INTERVAL_MS = 1500;
     private static final long POLL_TIMEOUT_MS = 30000;
+    /** Videos are processed before the post shows up. */
+    private static final long POLL_TIMEOUT_VIDEO_MS = 60000;
+    /** Slack (server clock vs this device's) when matching a post by title and creation time. */
+    private static final long CLOCK_SLACK_S = 120;
 
     /** An uploaded asset: where it came from, so a second post can upload it again. */
     private static final class Asset {
@@ -66,15 +91,36 @@ public final class ImageHosting {
         final String id;
         final Uri source;
         final Context context;
+        /** The file's MIME type (video/... for a video); null when unknown. */
+        final String mime;
+        /** A video's poster image URL; null for images. */
+        final String posterUrl;
         boolean submitted;
+        /** Title and time of the post made with this asset (see {@link #findPost}). */
+        String title;
+        long submittedAtMs;
 
-        Asset(String url, String id, Uri source, Context context) {
+        Asset(String url, String id, Uri source, Context context, String mime, String posterUrl) {
             this.url = url;
             this.id = id;
             this.source = source;
             this.context = context;
+            this.mime = mime;
+            this.posterUrl = posterUrl;
+        }
+
+        boolean isVideo() {
+            return isVideoMime(mime);
         }
     }
+
+    /** Uris (as strings) to whether they are videos, newest last. */
+    private static final Map<String, Boolean> VIDEO_CACHE = new LinkedHashMap<String, Boolean>() {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, Boolean> eldest) {
+            return size() > 16;
+        }
+    };
 
     /** Asset id to asset, newest last. */
     private static final Map<String, Asset> ASSETS = new LinkedHashMap<String, Asset>() {
@@ -106,6 +152,66 @@ public final class ImageHosting {
     // ---------------------------------------------------------------- hooks
 
     /**
+     * Picker hook (GetContent.createIntent, before its return): an image picker also offers
+     * videos. Any other intent is returned as it was.
+     */
+    public static Intent pickerIntent(Intent intent) {
+        try {
+            if (intent != null && "image/*".equals(intent.getType())) {
+                intent.setType("*/*");
+                intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[] {"image/*", "video/*"});
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "picker intent failed", t);
+        }
+        return intent;
+    }
+
+    /**
+     * Preview hook (rif's image decoder, at its entry): for a video, a frame scaled to fit
+     * {@code maxW} x {@code maxH}; null for anything else, so rif decodes it as before.
+     */
+    public static Bitmap videoPreview(Uri uri, int maxW, int maxH) {
+        try {
+            Context ctx = Settings.context();
+            if (ctx == null || uri == null || !isVideo(ctx, uri)) return null;
+            return frameAt(ctx, uri, maxW, maxH);
+        } catch (Throwable t) {
+            Log.w(TAG, "video preview failed", t);
+            return null;
+        }
+    }
+
+    /** Whether the file behind {@code uri} is a video (cached per Uri). Used to skip image rotation. */
+    public static boolean isVideo(Uri uri) {
+        try {
+            Context ctx = Settings.context();
+            return ctx != null && uri != null && isVideo(ctx, uri);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    private static boolean isVideo(Context ctx, Uri uri) {
+        String key = uri.toString();
+        synchronized (VIDEO_CACHE) {
+            Boolean known = VIDEO_CACHE.get(key);
+            if (known != null) return known;
+        }
+        boolean video = false;
+        try {
+            video = isVideoMime(countAndSniff(ctx, uri, false).mime);
+        } catch (Throwable t) {
+            Log.w(TAG, "type check failed: " + t);
+            return false;
+        }
+        synchronized (VIDEO_CACHE) {
+            VIDEO_CACHE.put(key, video);
+        }
+        return video;
+    }
+
+    /**
      * Hook 1: replaces the body of rif's uploader's doInBackground (runs on a background
      * thread). {@code task} is rif's uploader, a PropertyChangeListener that feeds the
      * progress bar. Returns the asset URL, or null with {@link #takeError} set.
@@ -114,7 +220,7 @@ public final class ImageHosting {
         ERROR.remove();
         try {
             Context ctx = context != null ? context : Settings.context();
-            if (ctx == null || uri == null) throw new UploadException("Couldn't read the image.");
+            if (ctx == null || uri == null) throw new UploadException("Couldn't read the file.");
             final PropertyChangeListener listener =
                     task instanceof PropertyChangeListener ? (PropertyChangeListener) task : null;
             Progress progress = new Progress() {
@@ -162,14 +268,16 @@ public final class ImageHosting {
 
     /**
      * Hook 2: whether rif should resize the picked image before uploading. GIFs never
-     * (resizing flattens them to one frame); stills only above 20 MB.
+     * (resizing flattens them to one frame), videos never (rif can't resize them); stills only
+     * above 20 MB.
      */
     public static boolean needsResize(Uri uri, long size) {
         if (size <= MAX_STILL_BYTES) return false;
         try {
             Context ctx = Settings.context();
             if (ctx != null && uri != null) {
-                return !"image/gif".equals(countAndSniff(ctx, uri, false).mime);
+                String mime = countAndSniff(ctx, uri, false).mime;
+                return !"image/gif".equals(mime) && !isVideoMime(mime);
             }
         } catch (Throwable t) {
             Log.w(TAG, "mime sniff failed", t);
@@ -179,26 +287,38 @@ public final class ImageHosting {
 
     /**
      * Hook 3: SubmitTask.d0's form parameters. A link post to one of our asset URLs becomes an
-     * image post. A reused asset makes a broken post, so one that was sent before is uploaded again.
+     * image post (a video post, with its poster, for a video). A reused asset makes a broken
+     * post, so one that was sent before is uploaded again.
      */
     public static c<String, String>[] fixParams(c<String, String>[] pairs) {
         try {
             if (pairs == null) return pairs;
             int kindAt = -1;
             int urlAt = -1;
+            int titleAt = -1;
             for (int i = 0; i < pairs.length; i++) {
                 if (pairs[i] == null) continue;
                 if ("kind".equals(pairs[i].a)) kindAt = i;
                 else if ("url".equals(pairs[i].a)) urlAt = i;
+                else if ("title".equals(pairs[i].a)) titleAt = i;
             }
             if (kindAt < 0 || urlAt < 0 || !"link".equals(pairs[kindAt].b)) return pairs;
             String url = pairs[urlAt].b;
+            String id = assetIdOf(url);
+            if (id == null) return pairs;
             Asset asset;
             synchronized (ASSETS) {
-                asset = ASSETS.get(assetIdOf(url));
+                asset = ASSETS.get(id);
             }
-            if (asset == null) return pairs;
-            if (asset.submitted) {
+            if (asset == null) {
+                // Not uploaded by this process (rif restored the URL field after process death).
+                // An image can still be posted; a video would need its poster.
+                if (!isImageHostUrl(url)) {
+                    Log.w(TAG, "video asset " + id + " is not in memory: posted as a link");
+                    return pairs;
+                }
+                asset = new Asset(url, id, null, Settings.context(), null, null);
+            } else if (asset.submitted && asset.source != null) {
                 try {
                     Asset again = uploadAsset(asset.source, asset.context, null);
                     asset = again;
@@ -208,7 +328,16 @@ public final class ImageHosting {
                 }
             }
             asset.submitted = true;
-            pairs[kindAt] = c.a("kind", "image");
+            asset.title = titleAt >= 0 ? pairs[titleAt].b : null;
+            asset.submittedAtMs = System.currentTimeMillis();
+            if (asset.isVideo() && asset.posterUrl != null) {
+                pairs[kindAt] = c.a("kind", "video");
+                c<String, String>[] withPoster = Arrays.copyOf(pairs, pairs.length + 1);
+                withPoster[pairs.length] = c.a("video_poster_url", asset.posterUrl);
+                pairs = withPoster;
+            } else {
+                pairs[kindAt] = c.a("kind", "image");
+            }
             synchronized (ASSETS) {
                 pendingPost = asset;
             }
@@ -259,9 +388,21 @@ public final class ImageHosting {
         return base + "/" + assetId;
     }
 
-    /** The asset id in one of Reddit's upload URLs (…amazonaws.com/{id}), else null. */
+    private static final String IMAGE_HOST = "https://reddit-uploaded-media.";
+    private static final String VIDEO_HOST = "https://reddit-uploaded-video.";
+
+    /** Whether the URL is on Reddit's image upload bucket (videos have their own). */
+    static boolean isImageHostUrl(String url) {
+        return url != null && url.startsWith(IMAGE_HOST);
+    }
+
+    static boolean isVideoMime(String mime) {
+        return mime != null && mime.startsWith("video/");
+    }
+
+    /** The asset id in one of Reddit's upload URLs (…amazonaws.com/{id}, image or video bucket), else null. */
     static String assetIdOf(String url) {
-        if (url == null || !url.startsWith("https://reddit-uploaded-media.")) return null;
+        if (url == null || !(url.startsWith(IMAGE_HOST) || url.startsWith(VIDEO_HOST))) return null;
         String path = url;
         int cut = path.indexOf('?');
         if (cut >= 0) path = path.substring(0, cut);
@@ -272,8 +413,24 @@ public final class ImageHosting {
         return id.length() > 0 ? id : null;
     }
 
-    /** MIME type from a file's first bytes; null if it isn't GIF, PNG, JPEG or WebP. */
+    /** ISO BMFF brands (after "ftyp") of still images, not videos. */
+    private static final String[] IMAGE_BRANDS =
+            {"heic", "heix", "hevc", "heim", "heis", "mif1", "msf1", "avif", "avis"};
+
+    /**
+     * MIME type from a file's first bytes; null if it isn't GIF, PNG, JPEG, WebP, MP4/MOV or WebM
+     * (HEIC and AVIF share the MP4 container, and are not sniffed as videos).
+     */
     static String sniffMime(byte[] b, int n) {
+        if (n >= 12 && b[4] == 'f' && b[5] == 't' && b[6] == 'y' && b[7] == 'p') {
+            String brand = new String(b, 8, 4, UTF8);
+            for (String image : IMAGE_BRANDS) {
+                if (image.equals(brand)) return null;
+            }
+            return "qt  ".equals(brand) ? "video/quicktime" : "video/mp4";
+        }
+        if (n >= 4 && (b[0] & 0xff) == 0x1a && (b[1] & 0xff) == 0x45 && (b[2] & 0xff) == 0xdf
+                && (b[3] & 0xff) == 0xa3) return "video/webm";
         if (n >= 4 && b[0] == 'G' && b[1] == 'I' && b[2] == 'F' && b[3] == '8') return "image/gif";
         if (n >= 4 && (b[0] & 0xff) == 0x89 && b[1] == 'P' && b[2] == 'N' && b[3] == 'G') return "image/png";
         if (n >= 3 && (b[0] & 0xff) == 0xff && (b[1] & 0xff) == 0xd8 && (b[2] & 0xff) == 0xff) return "image/jpeg";
@@ -286,7 +443,22 @@ public final class ImageHosting {
         if ("image/gif".equals(mime)) return "gif";
         if ("image/png".equals(mime)) return "png";
         if ("image/webp".equals(mime)) return "webp";
+        if ("video/quicktime".equals(mime)) return "mov";
+        if ("video/webm".equals(mime)) return "webm";
+        if (isVideoMime(mime)) return "mp4";
         return "jpg";
+    }
+
+    /**
+     * Size {@code w} x {@code h} scaled down (never up) to fit {@code maxW} x {@code maxH}, keeping
+     * the aspect ratio; {0, 0} when the size is unknown. A non-positive max means no limit.
+     */
+    static int[] fitSize(int w, int h, int maxW, int maxH) {
+        if (w <= 0 || h <= 0) return new int[] {0, 0};
+        double scale = 1;
+        if (maxW > 0) scale = Math.min(scale, (double) maxW / w);
+        if (maxH > 0) scale = Math.min(scale, (double) maxH / h);
+        return new int[] {Math.max(1, (int) Math.round(w * scale)), Math.max(1, (int) Math.round(h * scale))};
     }
 
     /** The parts of Reddit's /api/media/asset.json reply the upload needs. */
@@ -347,23 +519,66 @@ public final class ImageHosting {
         }
     }
 
-    /** {permalink, id} of the newest post in a submitted listing whose url holds i.redd.it/{assetId}, or null. */
+    /** {permalink, id} of the newest post in a submitted listing that belongs to {@code assetId}, or null. */
     static String[] findPost(String listing, String assetId) {
+        return findPost(listing, assetId, null, 0);
+    }
+
+    /**
+     * {permalink, id} of the newest post in a submitted listing that belongs to {@code assetId}: its
+     * url (or a video's media.reddit_video urls) holds i.redd.it/{assetId} or v.redd.it/{assetId}.
+     * Failing that, and when {@code title} is given, the newest post with that title created at
+     * or after {@code afterEpochSec} (a video's post may not carry the asset id). Null if none.
+     */
+    static String[] findPost(String listing, String assetId, String title, long afterEpochSec) {
         try {
             JSONArray children = new JSONObject(listing).getJSONObject("data").getJSONArray("children");
-            String needle = "i.redd.it/" + assetId;
             for (int i = 0; i < children.length(); i++) {
                 JSONObject d = children.getJSONObject(i).getJSONObject("data");
-                String url = d.optString("url", "");
-                String permalink = d.optString("permalink", "");
-                String id = d.optString("id", "");
-                if (url.contains(needle) && permalink.startsWith("/") && id.length() > 0) {
-                    return new String[] {permalink, id};
+                if (relatesTo(d, assetId)) {
+                    String[] found = postOf(d);
+                    if (found != null) return found;
+                }
+            }
+            String wanted = title != null ? title.trim() : "";
+            if (wanted.length() > 0) {
+                for (int i = 0; i < children.length(); i++) {
+                    JSONObject d = children.getJSONObject(i).getJSONObject("data");
+                    if (wanted.equals(d.optString("title", "").trim())
+                            && d.optDouble("created_utc", 0) >= afterEpochSec) {
+                        String[] found = postOf(d);
+                        if (found != null) return found;
+                    }
                 }
             }
         } catch (JSONException ignored) {
         }
         return null;
+    }
+
+    private static String[] postOf(JSONObject d) {
+        String permalink = d.optString("permalink", "");
+        String id = d.optString("id", "");
+        return permalink.startsWith("/") && id.length() > 0 ? new String[] {permalink, id} : null;
+    }
+
+    /** Whether a submitted post's url, or its media.reddit_video urls, point at the asset. */
+    private static boolean relatesTo(JSONObject d, String assetId) {
+        String image = "i.redd.it/" + assetId;
+        String video = "v.redd.it/" + assetId;
+        for (String key : new String[] {"url", "url_overridden_by_dest"}) {
+            String url = d.optString(key, "");
+            if (url.contains(image) || url.contains(video)) return true;
+        }
+        for (String key : new String[] {"media", "secure_media"}) {
+            JSONObject media = d.optJSONObject(key);
+            JSONObject rv = media != null ? media.optJSONObject("reddit_video") : null;
+            if (rv == null) continue;
+            for (String field : new String[] {"fallback_url", "hls_url", "dash_url", "scrubber_media_url"}) {
+                if (rv.optString(field, "").contains(video)) return true;
+            }
+        }
+        return false;
     }
 
     /** A submit reply in the shape rif's SubmitTask parses; {@code id} may be empty. */
@@ -391,15 +606,69 @@ public final class ImageHosting {
             sniff = countAndSniff(ctx, uri, true);
         } catch (IOException | RuntimeException e) {
             Log.w(TAG, "read failed: " + e);
-            throw new UploadException("Couldn't read the image.");
+            throw new UploadException("Couldn't read the file.");
         }
-        if (sniff.length <= 0) throw new UploadException("Couldn't read the image.");
-        String fileName = "image." + extensionFor(sniff.mime);
+        if (sniff.length <= 0) throw new UploadException("Couldn't read the file.");
+        boolean video = isVideoMime(sniff.mime);
+        byte[] poster = null;
+        if (video) {
+            if (sniff.length > MAX_VIDEO_BYTES) {
+                throw new UploadException("The video is over Reddit's 1 GB limit.");
+            }
+            // Before the (long) video upload, so a file without a usable frame fails at once.
+            poster = posterJpeg(ctx, uri);
+        }
+        String fileName = (video ? "video." : "image.") + extensionFor(sniff.mime);
 
+        Lease l = lease(ctx, fileName, sniff.mime);
+        InputStream in;
+        try {
+            in = ctx.getContentResolver().openInputStream(uri);
+        } catch (IOException | RuntimeException e) {
+            Log.w(TAG, "open failed: " + e);
+            throw new UploadException("Couldn't read the file.");
+        }
+        if (in == null) throw new UploadException("Couldn't read the file.");
+        postToS3(l, fileName, sniff.mime, in, sniff.length, progress);
+
+        String posterUrl = null;
+        if (video) {
+            Lease pl = lease(ctx, "poster.jpg", "image/jpeg");
+            postToS3(pl, "poster.jpg", "image/jpeg", new ByteArrayInputStream(poster), poster.length, null);
+            posterUrl = assetUrl(pl.action, pl.id);
+        }
+
+        Context app = ctx.getApplicationContext();
+        Asset asset = new Asset(assetUrl(l.action, l.id), l.id, uri, app != null ? app : ctx, sniff.mime, posterUrl);
+        rememberAsset(asset);
+        return asset;
+    }
+
+    private static void rememberAsset(Asset asset) {
+        synchronized (ASSETS) {
+            ASSETS.put(asset.id, asset);
+        }
+    }
+
+    /** For tests: registers an uploaded asset without uploading anything. */
+    static void rememberAsset(String id, String url, String mime, String posterUrl) {
+        rememberAsset(new Asset(url, id, null, null, mime, posterUrl));
+    }
+
+    /** For tests: forgets every uploaded asset. */
+    static void forgetAssets() {
+        synchronized (ASSETS) {
+            ASSETS.clear();
+            pendingPost = null;
+        }
+    }
+
+    /** Asks Reddit for an upload lease (/api/media/asset.json) for a file called {@code fileName}. */
+    private static Lease lease(Context ctx, String fileName, String mime) throws UploadException {
         String form;
         try {
             form = "filepath=" + URLEncoder.encode(fileName, "UTF-8")
-                    + "&mimetype=" + URLEncoder.encode(sniff.mime, "UTF-8") + "&raw_json=1";
+                    + "&mimetype=" + URLEncoder.encode(mime, "UTF-8") + "&raw_json=1";
         } catch (java.io.UnsupportedEncodingException e) {
             throw new IllegalStateException(e);
         }
@@ -408,32 +677,25 @@ public final class ImageHosting {
             Log.w(TAG, "asset request " + lease.code + ": " + lease.body);
             throw new UploadException("Reddit upload failed (HTTP " + lease.code + ").");
         }
-        Lease l;
         try {
-            l = parseLease(lease.body);
+            return parseLease(lease.body);
         } catch (JSONException e) {
             Log.w(TAG, "asset reply: " + e);
             throw new UploadException("Reddit upload failed (bad reply).");
         }
-
-        postToS3(ctx, uri, l, fileName, sniff, progress);
-
-        Context app = ctx.getApplicationContext();
-        Asset asset = new Asset(assetUrl(l.action, l.id), l.id, uri, app != null ? app : ctx);
-        synchronized (ASSETS) {
-            ASSETS.put(l.id, asset);
-        }
-        return asset;
     }
 
-    private static void postToS3(Context ctx, Uri uri, Lease l, String fileName, Sniff sniff, Progress progress)
-            throws UploadException {
+    /**
+     * Streams {@code length} bytes of {@code in} (closed here) to the lease's S3 bucket as a
+     * multipart form. The bucket is the lease's own (videos use another one than images).
+     */
+    private static void postToS3(Lease l, String fileName, String mime, InputStream in, long length,
+            Progress progress) throws UploadException {
         String boundary = "----rif" + UUID.randomUUID().toString().replace("-", "");
-        byte[] head = multipartHead(boundary, l.fields, fileName, sniff.mime);
+        byte[] head = multipartHead(boundary, l.fields, fileName, mime);
         byte[] tail = multipartTail(boundary);
         String action = l.action.startsWith("//") ? "https:" + l.action : l.action;
         HttpURLConnection conn = null;
-        InputStream in = null;
         try {
             conn = (HttpURLConnection) new URL(action).openConnection();
             conn.setConnectTimeout(15000);
@@ -441,19 +703,19 @@ public final class ImageHosting {
             conn.setDoOutput(true);
             conn.setRequestMethod("POST");
             conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
-            conn.setFixedLengthStreamingMode(head.length + sniff.length + tail.length);
-            in = ctx.getContentResolver().openInputStream(uri);
-            if (in == null) throw new UploadException("Couldn't read the image.");
+            conn.setFixedLengthStreamingMode(head.length + length + tail.length);
             OutputStream out = conn.getOutputStream();
             out.write(head);
             byte[] buf = new byte[16 * 1024];
             long sent = 0;
             int n;
             while ((n = in.read(buf)) > 0) {
-                out.write(buf, 0, n);
                 sent += n;
+                if (sent > length) throw new UploadException("Couldn't read the file.");
+                out.write(buf, 0, n);
                 if (progress != null) progress.sent(sent);
             }
+            if (sent != length) throw new UploadException("Couldn't read the file.");
             out.write(tail);
             out.close();
             int code = conn.getResponseCode();
@@ -528,7 +790,7 @@ public final class ImageHosting {
     /** rif's own sign-in token for the logged-in account (blocking: background threads only). */
     private static String token(Context ctx) throws UploadException {
         String name = userName(ctx);
-        if (name == null || name.length() == 0) throw new UploadException("Log in to upload images.");
+        if (name == null || name.length() == 0) throw new UploadException("Log in to upload media.");
         try {
             String t = AccountManager.get(ctx).blockingGetAuthToken(new Account(name, "com.reddit"), "redditisfun_oauth2", false);
             if (t != null && t.length() > 0) return t;
@@ -560,9 +822,12 @@ public final class ImageHosting {
 
     // ------------------------------------------------------ response lookup
 
-    /** Polls the user's newest posts until the one for {@code asset} shows up; {permalink, id} or null. */
+    /**
+     * Polls the user's newest posts until the one for {@code asset} shows up (up to 30 s, a video 60 s
+     * as it is processed first); {permalink, id} or null.
+     */
     private static String[] waitForPost(Asset asset) {
-        long end = System.currentTimeMillis() + POLL_TIMEOUT_MS;
+        long end = System.currentTimeMillis() + (asset.isVideo() ? POLL_TIMEOUT_VIDEO_MS : POLL_TIMEOUT_MS);
         try {
             String name = userName(asset.context);
             if (name == null || name.length() == 0) return null;
@@ -571,7 +836,10 @@ public final class ImageHosting {
                 Thread.sleep(POLL_INTERVAL_MS);
                 Resp r = authed(asset.context, url, null);
                 if (r.code == 200) {
-                    String[] post = findPost(r.body, asset.id);
+                    // The title match is only for videos, whose post may not carry the asset id.
+                    String[] post = asset.isVideo()
+                            ? findPost(r.body, asset.id, asset.title, asset.submittedAtMs / 1000 - CLOCK_SLACK_S)
+                            : findPost(r.body, asset.id);
                     if (post != null) return post;
                 } else {
                     Log.w(TAG, "submitted listing " + r.code);
@@ -609,14 +877,137 @@ public final class ImageHosting {
             s.mime = sniffMime(buf, n);
             if (s.mime == null) {
                 String t = ctx.getContentResolver().getType(uri);
-                s.mime = t != null && t.startsWith("image/") ? t : "image/jpeg";
+                s.mime = t != null && (t.startsWith("image/") || t.startsWith("video/")) ? t : "image/jpeg";
             }
             if (!count) return s;
+            if (isVideoMime(s.mime)) {
+                // A video can be huge: take its size from the provider instead of reading it all.
+                long declared = declaredSize(ctx, uri);
+                if (declared > 0) {
+                    s.length = declared;
+                    return s;
+                }
+            }
             int m;
             while ((m = in.read(buf)) > 0) s.length += m;
             return s;
         } finally {
             closeQuietly(in);
+        }
+    }
+
+    /** The file's size as the provider states it (OpenableColumns.SIZE, else the asset's length), or -1. */
+    private static long declaredSize(Context ctx, Uri uri) {
+        ContentResolver resolver = ctx.getContentResolver();
+        Cursor cursor = null;
+        try {
+            cursor = resolver.query(uri, new String[] {OpenableColumns.SIZE}, null, null, null);
+            if (cursor != null && cursor.moveToFirst()) {
+                int at = cursor.getColumnIndex(OpenableColumns.SIZE);
+                if (at >= 0 && !cursor.isNull(at) && cursor.getLong(at) > 0) return cursor.getLong(at);
+            }
+        } catch (RuntimeException e) {
+            Log.w(TAG, "size query failed: " + e);
+        } finally {
+            if (cursor != null) cursor.close();
+        }
+        AssetFileDescriptor fd = null;
+        try {
+            fd = resolver.openAssetFileDescriptor(uri, "r");
+            if (fd != null && fd.getLength() > 0) return fd.getLength();
+        } catch (IOException | RuntimeException e) {
+            Log.w(TAG, "asset length failed: " + e);
+        } finally {
+            if (fd != null) {
+                try {
+                    fd.close();
+                } catch (IOException ignored) {
+                }
+            }
+        }
+        return -1;
+    }
+
+    // --------------------------------------------------------- video frames
+
+    /**
+     * A frame of the video (at 0, the closest keyframe) scaled down to fit {@code maxW} x
+     * {@code maxH} (non-positive: no limit), or null. MediaMetadataRetriever returns frames already
+     * turned upright. API 27+ scales while decoding, older versions scale the full frame.
+     */
+    private static Bitmap frameAt(Context ctx, Uri uri, int maxW, int maxH) {
+        MediaMetadataRetriever r = new MediaMetadataRetriever();
+        try {
+            r.setDataSource(ctx, uri);
+            int w = metadataInt(r, MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH);
+            int h = metadataInt(r, MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT);
+            int rotation = metadataInt(r, MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION);
+            if (rotation == 90 || rotation == 270) {
+                int t = w;
+                w = h;
+                h = t;
+            }
+            int[] fit = fitSize(w, h, maxW, maxH);
+            Bitmap frame = null;
+            if (fit[0] > 0 && Build.VERSION.SDK_INT >= 27) {
+                frame = scaledFrame(r, fit[0], fit[1]);
+                // Trust the scaled frame only if it has the video's shape.
+                if (frame != null && Math.abs((double) frame.getWidth() / frame.getHeight() - (double) w / h) > 0.05) {
+                    frame.recycle();
+                    frame = null;
+                }
+            }
+            if (frame == null) {
+                frame = r.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
+                if (frame == null) frame = r.getFrameAtTime();
+                if (frame != null) {
+                    int[] to = fitSize(frame.getWidth(), frame.getHeight(), maxW, maxH);
+                    if (to[0] > 0 && (to[0] != frame.getWidth() || to[1] != frame.getHeight())) {
+                        Bitmap scaled = Bitmap.createScaledBitmap(frame, to[0], to[1], true);
+                        if (scaled != frame) frame.recycle();
+                        frame = scaled;
+                    }
+                }
+            }
+            return frame;
+        } finally {
+            try {
+                r.release();
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    @TargetApi(27)
+    private static Bitmap scaledFrame(MediaMetadataRetriever r, int w, int h) {
+        return r.getScaledFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, w, h);
+    }
+
+    private static int metadataInt(MediaMetadataRetriever r, int key) {
+        try {
+            String v = r.extractMetadata(key);
+            return v != null ? Integer.parseInt(v.trim()) : 0;
+        } catch (RuntimeException e) {
+            return 0;
+        }
+    }
+
+    /** The video's poster: its first frame as a JPEG (quality 85, at most 1280 px on a side). */
+    private static byte[] posterJpeg(Context ctx, Uri uri) throws UploadException {
+        Bitmap frame = null;
+        try {
+            frame = frameAt(ctx, uri, POSTER_MAX_PX, POSTER_MAX_PX);
+            if (frame == null) throw new UploadException("Couldn't read the video.");
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            if (!frame.compress(Bitmap.CompressFormat.JPEG, 85, out)) {
+                throw new UploadException("Couldn't read the video.");
+            }
+            return out.toByteArray();
+        } catch (RuntimeException e) {
+            Log.w(TAG, "poster failed: " + e);
+            throw new UploadException("Couldn't read the video.");
+        } finally {
+            if (frame != null) frame.recycle();
         }
     }
 

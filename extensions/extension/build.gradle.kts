@@ -29,6 +29,8 @@ dependencies {
     // rif at runtime, so it must never be bundled.
     compileOnly(files("libs/rif-stubs.jar"))
 
+    // The stubs (androidx Pair `c`) again for the unit tests, which call fixParams. Test-only.
+    testImplementation(files("libs/rif-stubs.jar"))
     testImplementation("junit:junit:4.13.2")
     // A real org.json for GalleryRepairTest: the Android stub jar on the unit-test classpath
     // returns defaults. Test-only, so never bundled. It wins over the stub on the test

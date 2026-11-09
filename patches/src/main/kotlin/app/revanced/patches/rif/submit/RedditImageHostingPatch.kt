@@ -1,7 +1,10 @@
 package app.revanced.patches.rif.submit
 
+import app.revanced.patcher.extensions.ExternalLabel
 import app.revanced.patcher.extensions.InstructionExtensions.addInstruction
 import app.revanced.patcher.extensions.InstructionExtensions.addInstructions
+import app.revanced.patcher.extensions.InstructionExtensions.addInstructionsWithLabels
+import app.revanced.patcher.extensions.InstructionExtensions.getInstruction
 import app.revanced.patcher.extensions.InstructionExtensions.instructions
 import app.revanced.patcher.extensions.InstructionExtensions.replaceInstruction
 import app.revanced.patcher.fingerprint
@@ -34,21 +37,26 @@ private const val URI = "Landroid/net/Uri;"
 private const val TEN_MB = 10485760L
 private const val TWENTY_MB_HEX = "0x1400000"
 
-// The Image tab's texts, without imgur and with the new limit. Quoted values keep their quotes
-// (aapt2 reads them as quoting).
+// The Image ("media") tab's texts, without imgur, with the new limit and covering videos. Quoted
+// values keep their quotes (aapt2 reads them as quoting).
 private val STRINGS = mapOf(
-    "submit_image_label" to "image (hosted by Reddit)",
-    "submit_image_confirmation_label" to "image hosting by Reddit",
+    "image" to "media",
+    "pick_image" to "pick media",
+    "submit_image_label" to "media (hosted by Reddit)",
+    "submit_image_confirmation_label" to "media hosting by Reddit",
     "submit_image_confirmation_requires_resize" to
         "\"The image size (%s bytes) is over Reddit's 20 MiB limit. RIF will upload a reduced-quality copy.\"",
     "submit_image_upload_status_success" to "uploaded.",
-    "imgur_upload_error" to "Error uploading image. Please try again later.",
+    "imgur_upload_error" to "Error uploading file. Please try again later.",
     "error_resizing_image" to
         "Error resizing image. Please compress your image to 20 MiB or smaller before uploading.",
+    "form_validation_submit_image_toast" to "Please select an image or video to upload.",
+    "selftext_on_image_not_editable_submission_warning" to
+        "text on image and video posts cannot be edited after submission",
 )
 
 private val redditImageHostingStringsPatch = resourcePatch(
-    description = "Removes imgur from the Image tab's texts.",
+    description = "Renames the Image tab to media and removes imgur from its texts.",
 ) {
     compatibleWith(*RIF_COMPATIBILITY)
 
@@ -125,6 +133,37 @@ internal val imageUploadFingerprint = fingerprint {
         method.returnType == "Ljava/lang/String;" &&
             method.params() == listOf("[Ljava/lang/Void;") &&
             method.hasString("Client-ID 4d7e2f74f1a519c", "Non-OK response code: %d")
+    }
+}
+
+private const val INTENT = "Landroid/content/Intent;"
+private const val BITMAP = "Landroid/graphics/Bitmap;"
+private const val PREVIEW_MARKER = "imageUri=%s"
+
+// The picker's contract (androidx ActivityResultContracts.GetContent, renamed d.c in both builds):
+// createIntent(Context, String) -> Intent holds the GET_CONTENT action, and nothing else does.
+internal val pickerIntentFingerprint = fingerprint {
+    custom { method, _ ->
+        method.returnType == INTENT &&
+            method.params() == listOf("Landroid/content/Context;", "Ljava/lang/String;") &&
+            method.hasString("android.intent.action.GET_CONTENT")
+    }
+}
+
+// rif's preview decoder (free o5.h.d, Platinum p5.h.d): static (Uri, int, int) -> Bitmap, logs "imageUri=%s".
+internal val previewDecodeFingerprint = fingerprint {
+    custom { method, _ ->
+        method.returnType == BITMAP && method.params() == listOf(URI, "I", "I") &&
+            method.hasString(PREVIEW_MARKER)
+    }
+}
+
+// The same class's rotation fix-up (free o5.h.a): static (Bitmap, Uri) -> Bitmap.
+internal val previewRotateFingerprint = fingerprint {
+    custom { method, classDef ->
+        method.returnType == BITMAP && method.params() == listOf(BITMAP, URI) &&
+            AccessFlags.STATIC.isSet(method.accessFlags) &&
+            classDef.methods.any { it.hasString(PREVIEW_MARKER) }
     }
 }
 
@@ -212,8 +251,8 @@ private fun MutableMethod.raiseLimit() {
 @Suppress("unused")
 val redditImageHostingPatch = bytecodePatch(
     name = "Reddit image hosting",
-    description = "Uploads images and GIFs for posts to Reddit instead of imgur and posts them as native image posts. " +
-        "GIFs are never resized.",
+    description = "Uploads images, GIFs and videos for posts to Reddit instead of imgur, as native posts. " +
+        "GIFs and videos are never resized.",
 ) {
     compatibleWith(*RIF_COMPATIBILITY)
     dependsOn(redditImageHostingStringsPatch, revancedSettingsPatch)
@@ -256,7 +295,49 @@ val redditImageHostingPatch = bytecodePatch(
             """,
         )
 
-        // Hook 2: the 10 MiB checks. GIFs never resize; stills resize only above 20 MiB.
+        // Hook 1b: the Submit screen's picker offers videos as well as images.
+        val picker = pickerIntentFingerprint.method
+        val pickerReturns = picker.instructions.withIndex().filter { it.value.opcode == Opcode.RETURN_OBJECT }
+        if (pickerReturns.size != 1) throw PatchException("picker: expected 1 return, found ${pickerReturns.size}")
+        val (pickerAt, pickerReturn) = pickerReturns.single()
+        val pickerRegister = (pickerReturn as OneRegisterInstruction).registerA
+        picker.addInstructions(
+            pickerAt,
+            """
+                invoke-static { v$pickerRegister }, $EXTENSION->pickerIntent($INTENT)$INTENT
+                move-result-object v$pickerRegister
+            """,
+        )
+
+        // Hook 1c: rif's preview decoder only knows images. A video gets a frame (the extension
+        // returns null for anything else, and rif decodes as before); rotation is skipped for
+        // videos, whose frames come out upright.
+        val decode = previewDecodeFingerprint.method
+        requireScratchRegister(decode)
+        decode.addInstructionsWithLabels(
+            0,
+            """
+                invoke-static { p0, p1, p2 }, $EXTENSION->videoPreview(${URI}II)$BITMAP
+                move-result-object v0
+                if-eqz v0, :rif_original
+                return-object v0
+            """,
+            ExternalLabel("rif_original", decode.getInstruction(0)),
+        )
+        val rotate = previewRotateFingerprint.method
+        requireScratchRegister(rotate)
+        rotate.addInstructionsWithLabels(
+            0,
+            """
+                invoke-static { p1 }, $EXTENSION->isVideo($URI)Z
+                move-result v0
+                if-eqz v0, :rif_original
+                return-object p0
+            """,
+            ExternalLabel("rif_original", rotate.getInstruction(0)),
+        )
+
+        // Hook 2: the 10 MiB checks. GIFs and videos never resize; stills resize only above 20 MiB.
         // The confirm-and-upload branch (submit fragment): size > limit means "resize".
         tenMbMethod("upload/resize branch") { m, c ->
             c.type == SUBMIT_FRAGMENT && m.params() == listOf(URI, "J") && m.returnType == "V"

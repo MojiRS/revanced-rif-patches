@@ -19,7 +19,7 @@ This bundle contains many small, independently-toggleable patches. Options for e
 | **Keep reply box above keyboard** | Keeps the reply box unobscured above the keyboard.                                                                                             |
 | **Fix broken markdown links**     | Shows links like `[name](u/name)` as links instead of raw text.                                                                                |
 | **Hide blocked mod comments**     | Adds a setting to hide mod comments from blocked users. Off by default.                                                                        |
-| **Reddit image hosting**          | Uploads images and GIFs for posts to Reddit instead of imgur, as native image posts. GIFs are never resized.                                   |
+| **Reddit image hosting**          | Uploads images, GIFs and videos for posts to Reddit instead of imgur, as native posts. GIFs and videos are never resized.                      |
 
 For details on how each patch works and its settings, see [PATCHES.md](PATCHES.md).
 

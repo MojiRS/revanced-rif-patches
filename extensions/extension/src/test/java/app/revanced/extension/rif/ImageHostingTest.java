@@ -2,7 +2,11 @@ package app.revanced.extension.rif;
 
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
+
+import androidx.core.util.c;
 
 import org.json.JSONObject;
 import org.junit.Test;
@@ -25,6 +29,92 @@ public class ImageHostingTest {
         assertEquals("jpg", ImageHosting.extensionFor("image/jpeg"));
     }
 
+    private static byte[] ftyp(String brand) {
+        return ("\0\0\0\u0018ftyp" + brand + "\0\0\0\0").getBytes(UTF8);
+    }
+
+    @Test
+    public void sniffsVideosAndNotHeicImages() {
+        assertEquals("video/mp4", ImageHosting.sniffMime(ftyp("isom"), 16));
+        assertEquals("video/mp4", ImageHosting.sniffMime(ftyp("mp42"), 16));
+        assertEquals("video/quicktime", ImageHosting.sniffMime(ftyp("qt  "), 16));
+        for (String image : new String[] {"heic", "heix", "hevc", "heim", "heis", "mif1", "msf1", "avif", "avis"}) {
+            assertNull(image, ImageHosting.sniffMime(ftyp(image), 16));
+        }
+        assertEquals("video/webm", ImageHosting.sniffMime(new byte[] {0x1a, 0x45, (byte) 0xdf, (byte) 0xa3, 0x01}, 5));
+        // Too short to carry a brand.
+        assertNull(ImageHosting.sniffMime(ftyp("isom"), 10));
+        assertEquals("mp4", ImageHosting.extensionFor("video/mp4"));
+        assertEquals("mov", ImageHosting.extensionFor("video/quicktime"));
+        assertEquals("webm", ImageHosting.extensionFor("video/webm"));
+        assertTrue(ImageHosting.isVideoMime("video/x-matroska"));
+        assertFalse(ImageHosting.isVideoMime("image/gif"));
+        assertFalse(ImageHosting.isVideoMime(null));
+    }
+
+    @Test
+    public void fitsFramesInsideABox() {
+        assertArrayEquals(new int[] {1280, 720}, ImageHosting.fitSize(3840, 2160, 1280, 1280));
+        assertArrayEquals(new int[] {720, 1280}, ImageHosting.fitSize(1080, 1920, 1280, 1280));
+        assertArrayEquals(new int[] {640, 360}, ImageHosting.fitSize(640, 360, 1280, 1280));
+        assertArrayEquals(new int[] {640, 360}, ImageHosting.fitSize(640, 360, 0, 0));
+        assertArrayEquals(new int[] {0, 0}, ImageHosting.fitSize(0, 360, 100, 100));
+    }
+
+    private static c<String, String> pair(String key, String value) {
+        return c.a(key, value);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static c<String, String>[] form(String url) {
+        return (c<String, String>[]) new c[] {pair("kind", "link"), pair("title", "t"), pair("url", url)};
+    }
+
+    private static String value(c<String, String>[] pairs, String key) {
+        for (c<String, String> p : pairs) {
+            if (key.equals(p.a)) return p.b;
+        }
+        return null;
+    }
+
+    @Test
+    public void aVideoPostGetsItsKindAndPoster() {
+        ImageHosting.forgetAssets();
+        String video = "https://reddit-uploaded-video.s3-accelerate.amazonaws.com/vid1";
+        String poster = "https://reddit-uploaded-media.s3-accelerate.amazonaws.com/pst1";
+        ImageHosting.rememberAsset("vid1", video, "video/mp4", poster);
+        c<String, String>[] out = ImageHosting.fixParams(form(video));
+        assertEquals(4, out.length);
+        assertEquals("video", value(out, "kind"));
+        assertEquals(video, value(out, "url"));
+        assertEquals(poster, value(out, "video_poster_url"));
+    }
+
+    @Test
+    public void anImagePostStaysAnImagePostWithoutPoster() {
+        ImageHosting.forgetAssets();
+        String image = "https://reddit-uploaded-media.s3-accelerate.amazonaws.com/img1";
+        ImageHosting.rememberAsset("img1", image, "image/png", null);
+        c<String, String>[] out = ImageHosting.fixParams(form(image));
+        assertEquals(3, out.length);
+        assertEquals("image", value(out, "kind"));
+        assertNull(value(out, "video_poster_url"));
+    }
+
+    @Test
+    public void unknownAssetsAfterProcessDeath() {
+        ImageHosting.forgetAssets();
+        // Image bucket: still an image post. Video bucket without a poster: left as a link.
+        c<String, String>[] image = ImageHosting.fixParams(form("https://reddit-uploaded-media.s3-accelerate.amazonaws.com/old1"));
+        assertEquals("image", value(image, "kind"));
+        c<String, String>[] video = ImageHosting.fixParams(form("https://reddit-uploaded-video.s3-accelerate.amazonaws.com/old2"));
+        assertEquals("link", value(video, "kind"));
+        assertEquals(3, video.length);
+        // Other links and other kinds are untouched.
+        assertEquals("link", value(ImageHosting.fixParams(form("https://example.com/a.mp4")), "kind"));
+        ImageHosting.forgetAssets();
+    }
+
     @Test
     public void assetUrlFromAction() {
         assertEquals("https://reddit-uploaded-media.s3-accelerate.amazonaws.com/abc",
@@ -36,6 +126,7 @@ public class ImageHostingTest {
     public void findsTheAssetIdInOurUrls() {
         assertEquals("abc", ImageHosting.assetIdOf("https://reddit-uploaded-media.s3-accelerate.amazonaws.com/abc"));
         assertEquals("abc", ImageHosting.assetIdOf("https://reddit-uploaded-media.s3-accelerate.amazonaws.com/abc/?x=1"));
+        assertEquals("v1", ImageHosting.assetIdOf("https://reddit-uploaded-video.s3-accelerate.amazonaws.com/v1"));
         assertNull(ImageHosting.assetIdOf("https://i.imgur.com/abc.png"));
         assertNull(ImageHosting.assetIdOf(null));
     }
@@ -67,6 +158,27 @@ public class ImageHostingTest {
         assertNull(ImageHosting.pendingReplyUserPage(
                 "{\"json\":{\"errors\":[[\"BAD_IMAGE\",\"x\",\"url\"]],\"data\":{\"websocket_url\":\"wss://example\"}}}"));
         assertNull(ImageHosting.pendingReplyUserPage("not json"));
+    }
+
+    @Test
+    public void findsAVideoPost() {
+        String listing = "{\"data\":{\"children\":["
+                + "{\"data\":{\"url\":\"https://i.redd.it/other.png\",\"permalink\":\"/r/a/comments/1/x/\",\"id\":\"1\","
+                + "\"title\":\"other\",\"created_utc\":2000}},"
+                + "{\"data\":{\"url\":\"https://v.redd.it/vid123\",\"permalink\":\"/r/a/comments/2/y/\",\"id\":\"2\","
+                + "\"title\":\"clip\",\"created_utc\":1000}},"
+                + "{\"data\":{\"url\":\"https://www.reddit.com/r/a/comments/3/z/\",\"permalink\":\"/r/a/comments/3/z/\",\"id\":\"3\","
+                + "\"title\":\"by player\",\"created_utc\":1500,\"media\":{\"reddit_video\":"
+                + "{\"fallback_url\":\"https://v.redd.it/pl456/DASH_720.mp4\"}}}}]}}";
+        assertArrayEquals(new String[] {"/r/a/comments/2/y/", "2"}, ImageHosting.findPost(listing, "vid123"));
+        assertArrayEquals(new String[] {"/r/a/comments/3/z/", "3"}, ImageHosting.findPost(listing, "pl456"));
+        assertNull(ImageHosting.findPost(listing, "missing"));
+        // No id match: the newest post with the same title created after the submit.
+        assertArrayEquals(new String[] {"/r/a/comments/2/y/", "2"}, ImageHosting.findPost(listing, "missing", "clip", 900));
+        assertNull(ImageHosting.findPost(listing, "missing", "clip", 1001));
+        assertNull(ImageHosting.findPost(listing, "missing", "nothing", 900));
+        // An id match wins over a title match.
+        assertArrayEquals(new String[] {"/r/a/comments/2/y/", "2"}, ImageHosting.findPost(listing, "vid123", "other", 900));
     }
 
     @Test
