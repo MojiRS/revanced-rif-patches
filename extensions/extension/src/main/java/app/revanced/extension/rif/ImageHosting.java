@@ -538,7 +538,17 @@ public final class ImageHosting {
         throw new UploadException("Reddit sign-in failed. Open rif and log in again.");
     }
 
+    /** rif's own user agent (what its Reddit requests send, after any Spoof client patch); set by the patch. */
+    private static volatile String rifUserAgent;
+
+    /** Called by the patched uploader with the result of rif's user-agent method. */
+    public static void setUserAgent(String ua) {
+        if (ua != null && ua.length() > 0) rifUserAgent = ua;
+    }
+
     private static String userAgent(Context ctx) {
+        String set = rifUserAgent;
+        if (set != null) return set;
         String v = FALLBACK_VERSION;
         try {
             String name = ctx.getPackageManager().getPackageInfo(ctx.getPackageName(), 0).versionName;
