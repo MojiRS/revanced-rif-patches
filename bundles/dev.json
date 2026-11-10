@@ -1,7 +1,7 @@
 {
-  "created_at": "2026-11-09T20:25:59",
-  "description": "Test build, not a release. For stable builds use main/bundles/stable.json.\n\nReddit image hosting now also posts videos. The Submit screen's Image tab is now \"media\": pick an image, GIF or video. Videos are never re-encoded; the thumbnail is taken from the first frame.\n\nTest: post a short and a longer video to a sub that allows video posts.\n",
-  "download_url": "https://raw.githubusercontent.com/MojiRS/revanced-rif-patches/test-builds/patches-1.9.0-dev2.rvp",
+  "created_at": "2026-11-10T00:24:30",
+  "description": "Test build, not a release. For stable builds use main/bundles/stable.json.\n\n- Uploads retry automatically (up to 3 tries) after a dropped connection.\n- Media tab: \"post as GIF (no sound)\" switch for videos.\n",
+  "download_url": "https://raw.githubusercontent.com/MojiRS/revanced-rif-patches/test-builds/patches-1.9.0-dev3.rvp",
   "signature_download_url": "N/A",
-  "version": "v1.9.0-dev2"
+  "version": "v1.9.0-dev3"
 }
