@@ -137,14 +137,35 @@ public final class ImageHosting {
     private static final ThreadLocal<String> ERROR = new ThreadLocal<>();
 
     /** A failure whose message is shown to the user as is. */
-    static final class UploadException extends Exception {
+    static class UploadException extends Exception {
         UploadException(String message) {
+            super(message);
+        }
+    }
+
+    /** A failure worth another try (a dropped connection, a 5xx); the message is shown if it was the last try. */
+    static final class RetryableException extends UploadException {
+        RetryableException(String message) {
             super(message);
         }
     }
 
     private interface Progress {
         void sent(long bytes);
+
+        /** Starts again from 0 (a retry). */
+        void reset();
+    }
+
+    /** Tries of one S3 upload (lease, open the file, post), and the waits before the 2nd and 3rd. */
+    private static final int UPLOAD_TRIES = 3;
+    private static final long[] BACKOFF_MS = {2000, 5000};
+
+    private static final String NETWORK_ERROR_FINAL = "Reddit upload failed (network error). Try again.";
+
+    /** Opens the file (or poster bytes) for one try. */
+    private interface Source {
+        InputStream open() throws UploadException;
     }
 
     private ImageHosting() {}
@@ -192,6 +213,18 @@ public final class ImageHosting {
         }
     }
 
+    /**
+     * Hook (the Submit screen's confirm-and-upload branch, main thread): a file was chosen. Shows the
+     * "post as GIF" switch for a video, hides it for anything else.
+     */
+    public static void mediaChosen(Uri uri) {
+        try {
+            PostAsGifView.mediaChosen(isVideo(uri));
+        } catch (Throwable t) {
+            Log.w(TAG, "media chosen failed", t);
+        }
+    }
+
     private static boolean isVideo(Context ctx, Uri uri) {
         String key = uri.toString();
         synchronized (VIDEO_CACHE) {
@@ -229,6 +262,16 @@ public final class ImageHosting {
                 @Override
                 public void sent(long bytes) {
                     if (listener == null || bytes - last < 32 * 1024) return;
+                    notifyProgress(bytes);
+                }
+
+                @Override
+                public void reset() {
+                    if (listener == null || last <= 0) return;
+                    notifyProgress(0);
+                }
+
+                private void notifyProgress(long bytes) {
                     last = bytes;
                     try {
                         listener.propertyChange(new PropertyChangeEvent(listener, "sent", null, Long.valueOf(bytes)));
@@ -287,7 +330,8 @@ public final class ImageHosting {
 
     /**
      * Hook 3: SubmitTask.d0's form parameters. A link post to one of our asset URLs becomes an
-     * image post (a video post, with its poster, for a video). A reused asset makes a broken
+     * image post (a video post, with its poster, for a video; a "videogif" post with the same poster
+     * when the "post as GIF" switch is on, see {@link PostAsGifView}). A reused asset makes a broken
      * post, so one that was sent before is uploaded again.
      */
     public static c<String, String>[] fixParams(c<String, String>[] pairs) {
@@ -331,7 +375,7 @@ public final class ImageHosting {
             asset.title = titleAt >= 0 ? pairs[titleAt].b : null;
             asset.submittedAtMs = System.currentTimeMillis();
             if (asset.isVideo() && asset.posterUrl != null) {
-                pairs[kindAt] = c.a("kind", "video");
+                pairs[kindAt] = c.a("kind", PostAsGifView.asGif ? "videogif" : "video");
                 c<String, String>[] withPoster = Arrays.copyOf(pairs, pairs.length + 1);
                 withPoster[pairs.length] = c.a("video_poster_url", asset.posterUrl);
                 pairs = withPoster;
@@ -620,21 +664,30 @@ public final class ImageHosting {
         }
         String fileName = (video ? "video." : "image.") + extensionFor(sniff.mime);
 
-        Lease l = lease(ctx, fileName, sniff.mime);
-        InputStream in;
-        try {
-            in = ctx.getContentResolver().openInputStream(uri);
-        } catch (IOException | RuntimeException e) {
-            Log.w(TAG, "open failed: " + e);
-            throw new UploadException("Couldn't read the file.");
-        }
-        if (in == null) throw new UploadException("Couldn't read the file.");
-        postToS3(l, fileName, sniff.mime, in, sniff.length, progress);
+        final Context fileCtx = ctx;
+        final Uri fileUri = uri;
+        Lease l = uploadWithRetry(ctx, fileName, sniff.mime, new Source() {
+            @Override
+            public InputStream open() throws UploadException {
+                try {
+                    InputStream in = fileCtx.getContentResolver().openInputStream(fileUri);
+                    if (in != null) return in;
+                } catch (IOException | RuntimeException e) {
+                    Log.w(TAG, "open failed: " + e);
+                }
+                throw new UploadException("Couldn't read the file.");
+            }
+        }, sniff.length, progress);
 
         String posterUrl = null;
         if (video) {
-            Lease pl = lease(ctx, "poster.jpg", "image/jpeg");
-            postToS3(pl, "poster.jpg", "image/jpeg", new ByteArrayInputStream(poster), poster.length, null);
+            final byte[] posterBytes = poster;
+            Lease pl = uploadWithRetry(ctx, "poster.jpg", "image/jpeg", new Source() {
+                @Override
+                public InputStream open() {
+                    return new ByteArrayInputStream(posterBytes);
+                }
+            }, poster.length, null);
             posterUrl = assetUrl(pl.action, pl.id);
         }
 
@@ -663,8 +716,59 @@ public final class ImageHosting {
         }
     }
 
-    /** Asks Reddit for an upload lease (/api/media/asset.json) for a file called {@code fileName}. */
+    /**
+     * One upload: up to {@link #UPLOAD_TRIES} times lease, open the file, post to S3, each try with a
+     * fresh lease (a dropped connection is not retried by Android's HttpURLConnection) after a pause
+     * of 2 s, then 5 s. Retried: dropped connections and timeouts, HTTP 500/503 and S3's 400
+     * RequestTimeout. Not retried: other HTTP errors and file read errors. Returns the lease used.
+     */
+    private static Lease uploadWithRetry(Context ctx, String fileName, String mime, Source source, long length,
+            Progress progress) throws UploadException {
+        for (int attempt = 1; ; attempt++) {
+            try {
+                if (attempt > 1 && progress != null) progress.reset();
+                Lease l = lease(ctx, fileName, mime);
+                InputStream in = source.open();
+                postToS3(l, fileName, mime, in, length, progress, attempt);
+                return l;
+            } catch (RetryableException e) {
+                if (attempt >= UPLOAD_TRIES) {
+                    throw new UploadException(e.getMessage() + " Try again.");
+                }
+                try {
+                    Thread.sleep(BACKOFF_MS[attempt - 1]);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    throw new UploadException(e.getMessage() + " Try again.");
+                }
+            }
+        }
+    }
+
+    /** Whether an S3 reply is worth another try: HTTP 500/503, or 400 with RequestTimeout in the body. */
+    static boolean isRetryableHttp(int code, String body) {
+        if (code == 500 || code == 503) return true;
+        return code == 400 && body != null && body.contains("RequestTimeout");
+    }
+
+    /** Asks Reddit for an upload lease (/api/media/asset.json); once more if the connection fails. */
     private static Lease lease(Context ctx, String fileName, String mime) throws UploadException {
+        try {
+            return leaseOnce(ctx, fileName, mime);
+        } catch (RetryableException e) {
+            Log.w(TAG, "asset request failed, once more: " + e.getMessage());
+            try {
+                Thread.sleep(1000);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                throw e;
+            }
+            return leaseOnce(ctx, fileName, mime);
+        }
+    }
+
+    /** One lease request (/api/media/asset.json) for a file called {@code fileName}. */
+    private static Lease leaseOnce(Context ctx, String fileName, String mime) throws UploadException {
         String form;
         try {
             form = "filepath=" + URLEncoder.encode(fileName, "UTF-8")
@@ -688,14 +792,19 @@ public final class ImageHosting {
     /**
      * Streams {@code length} bytes of {@code in} (closed here) to the lease's S3 bucket as a
      * multipart form. The bucket is the lease's own (videos use another one than images).
+     * File read errors end the upload at once; a network failure or a retryable HTTP reply throws
+     * {@link RetryableException}.
      */
     private static void postToS3(Lease l, String fileName, String mime, InputStream in, long length,
-            Progress progress) throws UploadException {
+            Progress progress, int attempt) throws UploadException {
         String boundary = "----rif" + UUID.randomUUID().toString().replace("-", "");
         byte[] head = multipartHead(boundary, l.fields, fileName, mime);
         byte[] tail = multipartTail(boundary);
         String action = l.action.startsWith("//") ? "https:" + l.action : l.action;
         HttpURLConnection conn = null;
+        String stage = "connect";
+        long sent = 0;
+        long t0 = System.currentTimeMillis();
         try {
             conn = (HttpURLConnection) new URL(action).openConnection();
             conn.setConnectTimeout(15000);
@@ -705,11 +814,18 @@ public final class ImageHosting {
             conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
             conn.setFixedLengthStreamingMode(head.length + length + tail.length);
             OutputStream out = conn.getOutputStream();
+            stage = "send";
             out.write(head);
             byte[] buf = new byte[16 * 1024];
-            long sent = 0;
-            int n;
-            while ((n = in.read(buf)) > 0) {
+            while (true) {
+                int n;
+                try {
+                    n = in.read(buf);
+                } catch (IOException e) {
+                    Log.w(TAG, "file read failed at " + sent + "/" + length + " B: " + e);
+                    throw new UploadException("Couldn't read the file.");
+                }
+                if (n <= 0) break;
                 sent += n;
                 if (sent > length) throw new UploadException("Couldn't read the file.");
                 out.write(buf, 0, n);
@@ -718,18 +834,35 @@ public final class ImageHosting {
             if (sent != length) throw new UploadException("Couldn't read the file.");
             out.write(tail);
             out.close();
+            stage = "response";
             int code = conn.getResponseCode();
             if (code < 200 || code >= 300) {
                 String body = readText(conn.getErrorStream());
-                Log.w(TAG, "S3 upload " + code + ": " + body);
+                Log.w(TAG, "S3 try " + attempt + " got HTTP " + code + " after " + (System.currentTimeMillis() - t0)
+                        + " ms: " + body);
+                if (isRetryableHttp(code, body)) {
+                    throw new RetryableException("Reddit upload failed (HTTP " + code + ").");
+                }
                 throw new UploadException("Reddit upload failed (HTTP " + code + ").");
             }
         } catch (IOException e) {
-            Log.w(TAG, "S3 upload failed: " + e);
-            throw new UploadException("Reddit upload failed (network error).");
+            Log.w(TAG, "S3 try " + attempt + " failed in " + stage + " at " + sent + "/" + length + " B after "
+                    + (System.currentTimeMillis() - t0) + " ms: " + e);
+            if ("send".equals(stage) && conn != null) logServerReply(conn);
+            throw new RetryableException("Reddit upload failed (network error).");
         } finally {
             closeQuietly(in);
             if (conn != null) conn.disconnect();
+        }
+    }
+
+    /** Best effort after a failed send: the reply S3 may have given before it cut the connection. */
+    private static void logServerReply(HttpURLConnection conn) {
+        try {
+            int code = conn.getResponseCode();
+            Log.w(TAG, "S3 replied HTTP " + code + ": " + readText(conn.getErrorStream()));
+        } catch (Throwable t) {
+            Log.w(TAG, "S3 gave no reply: " + t);
         }
     }
 
@@ -777,7 +910,7 @@ public final class ImageHosting {
             return r;
         } catch (IOException e) {
             Log.w(TAG, "request failed: " + e);
-            throw new UploadException("Reddit upload failed (network error).");
+            throw new RetryableException("Reddit upload failed (network error).");
         } finally {
             if (conn != null) conn.disconnect();
         }

@@ -26,6 +26,7 @@ import com.android.tools.smali.dexlib2.iface.instruction.ReferenceInstruction
 import com.android.tools.smali.dexlib2.iface.instruction.ThreeRegisterInstruction
 import com.android.tools.smali.dexlib2.iface.instruction.WideLiteralInstruction
 import com.android.tools.smali.dexlib2.iface.reference.MethodReference
+import org.w3c.dom.Element
 
 private const val EXTENSION = "Lapp/revanced/extension/rif/ImageHosting;"
 private const val SUBMIT_FRAGMENT = "Lcom/andrewshu/android/reddit/submit/m;"
@@ -55,8 +56,11 @@ private val STRINGS = mapOf(
         "text on image and video posts cannot be edited after submission",
 )
 
+private const val POST_AS_GIF_STRING = "rif_post_as_gif"
+private const val POST_AS_GIF_TEXT = "post as GIF (no sound)"
+
 private val redditImageHostingStringsPatch = resourcePatch(
-    description = "Renames the Image tab to media and removes imgur from its texts.",
+    description = "Renames the Image tab to media, removes imgur from its texts and adds the post-as-GIF switch.",
 ) {
     compatibleWith(*RIF_COMPATIBILITY)
 
@@ -72,6 +76,43 @@ private val redditImageHostingStringsPatch = resourcePatch(
             }
             if (changed != STRINGS.size) {
                 throw PatchException("expected ${STRINGS.size} Image tab strings, found $changed")
+            }
+            val added = doc.createElement("string")
+            added.setAttribute("name", POST_AS_GIF_STRING)
+            added.textContent = POST_AS_GIF_TEXT
+            doc.documentElement.appendChild(added)
+        }
+
+        // The "post as GIF (no sound)" row goes under the form preview, hidden until a video is
+        // chosen. It copies the look of rif's own "direct link" switch beside it.
+        for (layout in listOf("res/layout/submit_fragment.xml", "res/layout-v22/submit_fragment.xml")) {
+            document(layout).use { doc ->
+                val previews = (0 until doc.getElementsByTagName("ImageView").length)
+                    .map { doc.getElementsByTagName("ImageView").item(it) as Element }
+                    .filter { it.getAttribute("android:id") == "@id/submit_image_preview" }
+                if (previews.size != 1) {
+                    throw PatchException("$layout: expected 1 submit_image_preview, found ${previews.size}")
+                }
+                val preview = previews.single()
+
+                val row = doc.createElement("app.revanced.extension.rif.PostAsGifView")
+                row.setAttribute("android:orientation", "vertical")
+                row.setAttribute("android:id", "@+id/rif_post_as_gif_row")
+                row.setAttribute("android:visibility", "gone")
+                row.setAttribute("android:layout_width", "fill_parent")
+                row.setAttribute("android:layout_height", "wrap_content")
+                val switch = doc.createElement("androidx.appcompat.widget.SwitchCompat")
+                switch.setAttribute("android:textSize", "12.0sp")
+                switch.setAttribute("android:textColor", "?android:textColorSecondary")
+                switch.setAttribute("android:layout_gravity", "end")
+                switch.setAttribute("android:id", "@+id/rif_post_as_gif_switch")
+                switch.setAttribute("android:layout_width", "wrap_content")
+                switch.setAttribute("android:layout_height", "wrap_content")
+                switch.setAttribute("android:checked", "false")
+                switch.setAttribute("android:text", "@string/$POST_AS_GIF_STRING")
+                switch.setAttribute("android:textAllCaps", "true")
+                row.appendChild(switch)
+                preview.parentNode.insertBefore(row, preview.nextSibling)
             }
         }
     }
@@ -341,7 +382,11 @@ val redditImageHostingPatch = bytecodePatch(
         // The confirm-and-upload branch (submit fragment): size > limit means "resize".
         tenMbMethod("upload/resize branch") { m, c ->
             c.type == SUBMIT_FRAGMENT && m.params() == listOf(URI, "J") && m.returnType == "V"
-        }.second.useNeedsResize { limit -> "move-object v$limit, p1" }
+        }.second.apply {
+            useNeedsResize { limit -> "move-object v$limit, p1" }
+            // The same branch is where the form's preview appears: show or hide the post-as-GIF row.
+            addInstruction(0, "invoke-static { p1 }, $EXTENSION->mediaChosen($URI)V")
+        }
 
         // The confirm dialog's "requires resize" warning (the dialog holds the Uri in its only Uri field).
         val (dialogClass, dialogText) = tenMbMethod("resize warning") { m, _ ->

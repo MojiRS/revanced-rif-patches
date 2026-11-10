@@ -91,6 +91,43 @@ public class ImageHostingTest {
     }
 
     @Test
+    public void theSwitchMakesAVideoAVideogif() {
+        ImageHosting.forgetAssets();
+        String video = "https://reddit-uploaded-video.s3-accelerate.amazonaws.com/vid2";
+        String poster = "https://reddit-uploaded-media.s3-accelerate.amazonaws.com/pst2";
+        ImageHosting.rememberAsset("vid2", video, "video/mp4", poster);
+        PostAsGifView.asGif = true;
+        try {
+            c<String, String>[] out = ImageHosting.fixParams(form(video));
+            assertEquals("videogif", value(out, "kind"));
+            assertEquals(video, value(out, "url"));
+        } finally {
+            PostAsGifView.asGif = false;
+        }
+        // An image is never a videogif, switch or not.
+        String image = "https://reddit-uploaded-media.s3-accelerate.amazonaws.com/img2";
+        ImageHosting.rememberAsset("img2", image, "image/png", null);
+        PostAsGifView.asGif = true;
+        try {
+            assertEquals("image", value(ImageHosting.fixParams(form(image)), "kind"));
+        } finally {
+            PostAsGifView.asGif = false;
+        }
+    }
+
+    @Test
+    public void retriesDroppedConnectionsAndSomeHttpErrorsOnly() {
+        assertTrue(ImageHosting.isRetryableHttp(500, ""));
+        assertTrue(ImageHosting.isRetryableHttp(503, "<Error><Code>SlowDown</Code></Error>"));
+        assertTrue(ImageHosting.isRetryableHttp(400, "<Error><Code>RequestTimeout</Code></Error>"));
+        assertFalse(ImageHosting.isRetryableHttp(400, "<Error><Code>EntityTooLarge</Code></Error>"));
+        assertFalse(ImageHosting.isRetryableHttp(400, null));
+        assertFalse(ImageHosting.isRetryableHttp(403, "RequestTimeout"));
+        assertFalse(ImageHosting.isRetryableHttp(404, ""));
+        assertFalse(ImageHosting.isRetryableHttp(200, ""));
+    }
+
+    @Test
     public void anImagePostStaysAnImagePostWithoutPoster() {
         ImageHosting.forgetAssets();
         String image = "https://reddit-uploaded-media.s3-accelerate.amazonaws.com/img1";
