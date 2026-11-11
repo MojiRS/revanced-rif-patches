@@ -1,7 +1,7 @@
 {
-  "created_at": "2026-11-11T17:49:08",
-  "description": "Test build, not a release. For stable builds use main/bundles/stable.json.\n\n- Uploaded media is no longer posted as a plain link after rif restarts in the background or a draft is restored.\n- \"Post as GIF\" switch hides after a failed upload.\n",
-  "download_url": "https://raw.githubusercontent.com/MojiRS/revanced-rif-patches/test-builds/patches-1.9.0-dev4.rvp",
+  "created_at": "2026-11-11T20:02:32",
+  "description": "Test build, not a release. For stable builds use main/bundles/stable.json.\n\n- New: images and GIFs in comment replies. Turn on the formatting bar in the reply box (\u22ee \u2192 Show formatting bar) and tap the image button. One image or GIF per comment; it uploads when you send.\n- Not yet: adding or keeping images when editing a comment.\n",
+  "download_url": "https://raw.githubusercontent.com/MojiRS/revanced-rif-patches/test-builds/patches-1.9.0-dev5.rvp",
   "signature_download_url": "N/A",
-  "version": "v1.9.0-dev4"
+  "version": "v1.9.0-dev5"
 }
