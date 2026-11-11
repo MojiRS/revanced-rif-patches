@@ -24,6 +24,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.provider.OpenableColumns;
 import android.text.Editable;
 import android.util.Log;
@@ -78,8 +79,10 @@ import java.util.regex.Pattern;
  * Reddit converts the markdown to rich text, and the comment goes out as {@code richtext_json}.
  * Reddit only accepts hosted media in rich text. A comment without a marker is not touched.</li>
  * <li>{@link #wrapCommentResponse}: Reddit answers such a comment with the bare comment object, rif
- * expects it wrapped in {@code json.data.things}; the "Processing" placeholder is turned into a link
- * so the comment shows its media at once.</li>
+ * expects it wrapped in {@code json.data.things}. Its body is a "Processing" placeholder: the new
+ * comment is polled for up to {@link #POLL_MAX_MS} until Reddit has written the media's real link
+ * into it; if that doesn't happen, a PNG or GIF placeholder becomes an i.redd.it link and a
+ * JPEG or WebP one stays until the thread is reloaded.</li>
  * </ul>
  * One media object per comment is Reddit's rule. A marker is only a label: the file it stands for
  * is kept in SharedPreferences ({@link Rec}), so it survives rotation, process death and rif's drafts.
@@ -108,6 +111,9 @@ public final class CommentMedia {
     private static final int MAX_RECORDS = 20;
     /** A pick that arrives while no reply dialog is up waits this long for one (process death, rotation). */
     private static final long PENDING_MS = 60000;
+    /** Wait between polls for Reddit's processed comment body, and the longest total wait. */
+    static final long POLL_MS = 2000;
+    static final long POLL_MAX_MS = 12000;
 
     private CommentMedia() {}
 
@@ -333,6 +339,73 @@ public final class CommentMedia {
                 Matcher.quoteReplacement("<a href=\"" + url + "\">" + url + "</a>"));
         return s.replaceAll("&lt;em&gt;Processing (?:img|gif) " + id + "\\.\\.\\.&lt;/em&gt;",
                 Matcher.quoteReplacement("&lt;a href=&quot;" + url + "&quot;&gt;" + url + "&lt;/a&gt;"));
+    }
+
+    /** Reddit's stand-in for media it is still processing: {@code *Processing img <id>...*} (or gif). */
+    private static final Pattern PLACEHOLDER = Pattern.compile("\\*Processing (?:img|gif) [A-Za-z0-9]+\\.\\.\\.\\*");
+
+    /** Whether a comment body still holds a "Processing" placeholder. */
+    static boolean hasPlaceholder(String body) {
+        return body != null && PLACEHOLDER.matcher(body).find();
+    }
+
+    /** A flat comment reply's {link id36, comment id36}, or null when it has neither or they look wrong. */
+    static String[] pollTarget(String reply) {
+        try {
+            JSONObject o = new JSONObject(reply);
+            if (o.has("json")) return null;
+            String link = o.optString("link_id", "");
+            String id = o.optString("id", "");
+            if (id.length() == 0) id = o.optString("name", "");
+            if (link.startsWith("t3_")) link = link.substring(3);
+            if (id.startsWith("t1_")) id = id.substring(3);
+            if (!link.matches("[a-z0-9]{1,20}") || !id.matches("[a-z0-9]{1,20}")) return null;
+            return new String[] {link, id};
+        } catch (JSONException e) {
+            return null;
+        }
+    }
+
+    /**
+     * The comment {@code id} (id36) from a comment-permalink listing ({@code [post listing, comment
+     * listing]}), its data object, or null when it isn't there.
+     */
+    static JSONObject commentFromListing(String json, String id) {
+        try {
+            JSONArray listings = new JSONArray(json);
+            JSONObject comments = listings.optJSONObject(1);
+            JSONObject data = comments != null ? comments.optJSONObject("data") : null;
+            JSONArray children = data != null ? data.optJSONArray("children") : null;
+            if (children == null) return null;
+            for (int i = 0; i < children.length(); i++) {
+                JSONObject child = children.optJSONObject(i);
+                JSONObject d = child != null ? child.optJSONObject("data") : null;
+                if (d != null && id.equals(d.optString("id", ""))) return d;
+            }
+            return null;
+        } catch (JSONException e) {
+            return null;
+        }
+    }
+
+    /**
+     * The flat reply with the processed comment's body and body_html in place of its own. The reply
+     * itself is a raw_json one (body_html is plain HTML, as the emulator check of 2026-11-11 showed),
+     * like the poll's, so the texts go in as they are. Returns the reply as it was when the processed
+     * comment has no body or still has a placeholder.
+     */
+    static String mergeProcessed(String reply, JSONObject processed) {
+        try {
+            String body = processed.optString("body", null);
+            String html = processed.optString("body_html", null);
+            if (body == null || html == null || hasPlaceholder(body)) return reply;
+            JSONObject o = new JSONObject(reply);
+            o.put("body", body);
+            o.put("body_html", html);
+            return o.toString();
+        } catch (JSONException e) {
+            return reply;
+        }
     }
 
     /** The reply's first error as "CODE: message" (for the log), or null if it has none. */
@@ -1158,6 +1231,7 @@ public final class CommentMedia {
         }
         try {
             String text = new String(raw, UTF8);
+            text = waitForProcessed(text);
             String wrapped = wrapComment(text, sent.assetId, sent.ext);
             if (wrapped == null) {
                 String error = firstError(text);
@@ -1169,6 +1243,65 @@ public final class CommentMedia {
             Log.w(TAG, "response rewrite failed", t);
             return new ByteArrayInputStream(raw);
         }
+    }
+
+    /**
+     * A flat reply whose body still has the placeholder: polls the new comment until Reddit has
+     * rewritten its body (the media's real link), for at most {@link #POLL_MAX_MS}, and returns the
+     * reply with that body. Any other reply, a timeout or an error gives the reply back unchanged: the
+     * comment is posted already, so this must never fail the send. Background thread.
+     */
+    private static String waitForProcessed(String reply) {
+        boolean shown = false;
+        try {
+            JSONObject flat = new JSONObject(reply);
+            if (flat.has("json") || !hasPlaceholder(flat.optString("body", ""))) return reply;
+            String[] target = pollTarget(reply);
+            Context ctx = Settings.context();
+            if (target == null || ctx == null) {
+                Log.w(TAG, "no processing poll: target " + (target != null) + ", context " + (ctx != null));
+                return reply;
+            }
+            String url = API + "/comments/" + target[0] + ".json?comment=" + target[1] + "&raw_json=1&limit=1&context=0";
+            showProgress("Processing…");
+            shown = true;
+            long start = SystemClock.elapsedRealtime();
+            int polls = 0;
+            while (SystemClock.elapsedRealtime() - start + POLL_MS <= POLL_MAX_MS) {
+                try {
+                    Thread.sleep(POLL_MS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return reply;
+                }
+                polls++;
+                try {
+                    ImageHosting.Resp r = ImageHosting.authed(ctx, url, null);
+                    if (r.code != 200) {
+                        Log.w(TAG, "processing poll " + polls + ": HTTP " + r.code);
+                        continue;
+                    }
+                    JSONObject comment = commentFromListing(r.body, target[1]);
+                    if (comment == null) {
+                        Log.w(TAG, "processing poll " + polls + ": comment not in the listing");
+                        continue;
+                    }
+                    String merged = mergeProcessed(reply, comment);
+                    if (!merged.equals(reply)) {
+                        Log.d(TAG, "processed after "+ (SystemClock.elapsedRealtime() - start) + " ms (" + polls + " polls)");
+                        return merged;
+                    }
+                } catch (Throwable t) {
+                    Log.w(TAG, "processing poll " + polls + " failed: " + t);
+                }
+            }
+            Log.w(TAG, "still processing after " + polls + " polls");
+        } catch (Throwable t) {
+            Log.w(TAG, "waiting for the processed comment failed", t);
+        } finally {
+            if (shown) hideProgress();
+        }
+        return reply;
     }
 
     private static byte[] readAll(InputStream in) throws IOException {

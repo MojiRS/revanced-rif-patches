@@ -190,6 +190,67 @@ public class CommentMediaTest {
     }
 
     @Test
+    public void detectsThePlaceholder() {
+        assertTrue(CommentMedia.hasPlaceholder("Some **text**\n\n*Processing img ID123...*"));
+        assertTrue(CommentMedia.hasPlaceholder("*Processing gif abc9...*"));
+        assertFalse(CommentMedia.hasPlaceholder("Some text https://preview.redd.it/x.jpeg?width=1&s=2"));
+        assertFalse(CommentMedia.hasPlaceholder("Processing img x..."));
+        assertFalse(CommentMedia.hasPlaceholder(null));
+    }
+
+    @Test
+    public void findsThePollTarget() {
+        assertArrayEquals(new String[] {"1xpucoq", "abc"}, CommentMedia.pollTarget(FLAT.replace("t3_x", "t3_1xpucoq")));
+        assertArrayEquals(new String[] {"x", "abc"}, CommentMedia.pollTarget("{\"name\":\"t1_abc\",\"link_id\":\"t3_x\"}"));
+        // Comment ids are 13 characters long now.
+        assertArrayEquals(new String[] {"1xpucoq", "19shn2b3a870h"},
+                CommentMedia.pollTarget("{\"id\":\"19shn2b3a870h\",\"name\":\"t1_19shn2b3a870h\",\"link_id\":\"t3_1xpucoq\"}"));
+        assertNull(CommentMedia.pollTarget("{\"id\":\"abc\"}"));
+        assertNull(CommentMedia.pollTarget("{\"id\":\"a/../b\",\"link_id\":\"t3_x\"}"));
+        assertNull(CommentMedia.pollTarget("{\"json\":{}}"));
+        assertNull(CommentMedia.pollTarget("nope"));
+    }
+
+    private static final String LISTING = "[{\"kind\":\"Listing\",\"data\":{\"children\":[{\"kind\":\"t3\",\"data\":{\"id\":\"x\"}}]}},"
+            + "{\"kind\":\"Listing\",\"data\":{\"children\":[{\"kind\":\"t1\",\"data\":{\"id\":\"other\",\"body\":\"no\"}},"
+            + "{\"kind\":\"t1\",\"data\":{\"id\":\"abc\",\"body\":\"Some **text**\\n\\n[img](https://preview.redd.it/ID123.jpeg?width=640&format=pjpg&auto=webp&s=ff)\","
+            + "\"body_html\":\"<div class=\\\"md\\\"><p>Some <strong>text</strong></p>\\n<p><a href=\\\"https://preview.redd.it/ID123.jpeg?width=640&amp;s=ff\\\">x</a></p></div>\"}}]}}]";
+
+    @Test
+    public void picksTheCommentOutOfTheListing() {
+        JSONObject c = CommentMedia.commentFromListing(LISTING, "abc");
+        assertNotNull(c);
+        assertTrue(c.optString("body").startsWith("Some **text**"));
+        assertNull(CommentMedia.commentFromListing(LISTING, "zzz"));
+        assertNull(CommentMedia.commentFromListing("[{}]", "abc"));
+        assertNull(CommentMedia.commentFromListing("{\"json\":1}", "abc"));
+        assertNull(CommentMedia.commentFromListing("garbage", "abc"));
+    }
+
+    @Test
+    public void mergesTheProcessedBodyIntoTheReply() throws Exception {
+        JSONObject processed = CommentMedia.commentFromListing(LISTING, "abc");
+        String merged = CommentMedia.mergeProcessed(FLAT, processed);
+        JSONObject o = new JSONObject(merged);
+        assertEquals(processed.getString("body"), o.getString("body"));
+        assertEquals(processed.getString("body_html"), o.getString("body_html"));
+        assertEquals("t1_abc", o.getString("name"));
+        assertEquals("me", o.getString("author"));
+        // The merged reply is wrapped and keeps its processed link (no placeholder left to rewrite).
+        JSONObject data = new JSONObject(CommentMedia.wrapComment(merged, "ID123", null)).getJSONObject("json")
+                .getJSONObject("data").getJSONArray("things").getJSONObject(0).getJSONObject("data");
+        assertEquals(processed.getString("body"), data.getString("body"));
+    }
+
+    @Test
+    public void keepsTheReplyWhenNothingIsProcessedYet() throws Exception {
+        JSONObject still = new JSONObject(FLAT).put("id", "abc");
+        assertEquals(FLAT, CommentMedia.mergeProcessed(FLAT, still));
+        assertEquals(FLAT, CommentMedia.mergeProcessed(FLAT, new JSONObject("{\"id\":\"abc\"}")));
+        assertEquals(FLAT, CommentMedia.mergeProcessed(FLAT, new JSONObject("{\"body\":\"x\"}")));
+    }
+
+    @Test
     public void leavesWrappedAndForeignRepliesAlone() {
         // Already wrapped (also with errors): rif shows Reddit's message itself.
         assertNull(CommentMedia.wrapComment("{\"json\":{\"errors\":[[\"RATELIMIT\",\"slow down\",\"ratelimit\"]]}}", "ID123", "png"));
