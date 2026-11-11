@@ -21,6 +21,7 @@ import com.android.tools.smali.dexlib2.Opcode
 import com.android.tools.smali.dexlib2.iface.ClassDef
 import com.android.tools.smali.dexlib2.iface.instruction.Instruction
 import com.android.tools.smali.dexlib2.iface.Method
+import com.android.tools.smali.dexlib2.iface.instruction.FiveRegisterInstruction
 import com.android.tools.smali.dexlib2.iface.instruction.OneRegisterInstruction
 import com.android.tools.smali.dexlib2.iface.instruction.ReferenceInstruction
 import com.android.tools.smali.dexlib2.iface.instruction.ThreeRegisterInstruction
@@ -224,6 +225,49 @@ internal val submitResponseFingerprint = fingerprint {
     }
 }
 
+// Comment media. The reply dialog (kept class name in both builds) builds its view in a method that
+// hands the formatting bar its editor; the same class's onCreate reads the dialog's arguments.
+private const val REPLY_DIALOG = "Lcom/andrewshu/android/reddit/comments/reply/t;"
+private const val COMMENT_REPLY_TASK = "Lcom/andrewshu/android/reddit/comments/reply/CommentReplyTask;"
+private const val COMMENT_MEDIA = "Lapp/revanced/extension/rif/CommentMedia;"
+private const val SET_TARGET_EDIT_TEXT =
+    "Lcom/andrewshu/android/reddit/comments/reply/MarkdownButtonBarView;->setTargetEditText(Landroid/widget/EditText;)V"
+private const val BUNDLE = "Landroid/os/Bundle;"
+
+// Free t.O2 / Platinum t.D2: onCreateView(LayoutInflater, ViewGroup, Bundle) -> View.
+internal val replyDialogViewFingerprint = fingerprint {
+    custom { method, classDef ->
+        classDef.type == REPLY_DIALOG && method.returnType == "Landroid/view/View;" &&
+            method.params() == listOf("Landroid/view/LayoutInflater;", "Landroid/view/ViewGroup;", BUNDLE) &&
+            method.implementation?.instructions?.any {
+                it is ReferenceInstruction && it.reference.toString() == SET_TARGET_EDIT_TEXT
+            } == true
+    }
+}
+
+// Free t.K2 / Platinum t.z2: onCreate(Bundle), which reads the arguments with requireArguments().
+internal val replyDialogCreateFingerprint = fingerprint {
+    custom { method, classDef ->
+        classDef.type == REPLY_DIALOG && method.returnType == "V" && method.params() == listOf(BUNDLE) &&
+            method.hasString("parentKind", "editThingName", "editBody")
+    }
+}
+
+// CommentReplyTask (kept names in both builds): d0() builds the form parameters, j0(InputStream) parses the reply.
+internal val commentParamsFingerprint = fingerprint {
+    custom { method, classDef ->
+        classDef.type == COMMENT_REPLY_TASK && method.name == "d0" && method.parameterTypes.isEmpty() &&
+            method.returnType == PAIR_ARRAY
+    }
+}
+
+internal val commentResponseFingerprint = fingerprint {
+    custom { method, classDef ->
+        classDef.type == COMMENT_REPLY_TASK && method.name == "j0" &&
+            method.params() == listOf("Ljava/io/InputStream;")
+    }
+}
+
 private fun Instruction.isTenMb() =
     opcode == Opcode.CONST_WIDE_32 && (this as WideLiteralInstruction).wideLiteral == TEN_MB
 
@@ -293,7 +337,7 @@ private fun MutableMethod.raiseLimit() {
 val redditImageHostingPatch = bytecodePatch(
     name = "Reddit image hosting",
     description = "Uploads images, GIFs and videos for posts to Reddit instead of imgur, as native posts. " +
-        "GIFs and videos are never resized.",
+        "Adds an image button to comment replies. GIFs and videos are never resized.",
 ) {
     compatibleWith(*RIF_COMPATIBILITY)
     dependsOn(redditImageHostingStringsPatch, revancedSettingsPatch)
@@ -434,6 +478,70 @@ val redditImageHostingPatch = bytecodePatch(
             0,
             """
                 invoke-static { p1 }, $EXTENSION->wrapResponse(Ljava/io/InputStream;)Ljava/io/InputStream;
+                move-result-object p1
+            """,
+        )
+
+        // Hook 5: images in comment replies. The reply dialog's view method, right after the
+        // formatting bar got its editor: the extension adds the button and gets the dialog's
+        // arguments (requireArguments, whose obfuscated name is read from the same class's onCreate).
+        val dialogView = replyDialogViewFingerprint.method
+        requireScratchRegister(dialogView)
+        val dialogCode = dialogView.instructions.toList()
+        val setTargetAt = dialogCode.indexOfFirst {
+            it is ReferenceInstruction && it.reference.toString() == SET_TARGET_EDIT_TEXT
+        }
+        if (setTargetAt < 0) throw PatchException("reply dialog: setTargetEditText call not found")
+        val setTarget = dialogCode[setTargetAt] as FiveRegisterInstruction
+        val barRegister = setTarget.registerC
+        val editorRegister = setTarget.registerD
+        if (barRegister == 0 || editorRegister == 0) throw PatchException("reply dialog: v0 holds the bar or the editor")
+        val requireArguments = replyDialogCreateFingerprint.method.instructions.toList()
+            .filter { it.opcode == Opcode.INVOKE_VIRTUAL }
+            .map { (it as ReferenceInstruction).reference as MethodReference }
+            .first { it.parameterTypes.isEmpty() && it.returnType == BUNDLE }
+        dialogView.addInstructions(
+            setTargetAt + 1,
+            """
+                invoke-static { }, $uaMethod
+                move-result-object v0
+                invoke-static { v0 }, $EXTENSION->setUserAgent(Ljava/lang/String;)V
+                invoke-virtual { p0 }, $requireArguments
+                move-result-object v0
+                invoke-static { p0, v$barRegister, v$editorRegister, v0 }, $COMMENT_MEDIA->onReplyDialog(Ljava/lang/Object;Landroid/view/View;Landroid/widget/EditText;$BUNDLE)V
+            """,
+        )
+
+        // Hook 6: CommentReplyTask.d0, before each return: a comment with a picked image is uploaded
+        // and sent as rich text; any other comment's parameters are returned as they are.
+        val commentParams = commentParamsFingerprint.method
+        requireScratchRegister(commentParams)
+        val commentReturns = commentParams.instructions.withIndex().filter { it.value.opcode == Opcode.RETURN_OBJECT }
+        if (commentReturns.isEmpty()) throw PatchException("no return in CommentReplyTask.d0")
+        for ((index, insn) in commentReturns.reversed()) {
+            val register = (insn as OneRegisterInstruction).registerA
+            commentParams.addInstructions(
+                index,
+                """
+                    invoke-static { v$register, p0 }, $COMMENT_MEDIA->commentParams(${PAIR_ARRAY}Ljava/lang/Object;)$PAIR_ARRAY
+                    move-result-object v$register
+                """,
+            )
+        }
+        commentParams.addInstructions(
+            0,
+            """
+                invoke-static { }, $uaMethod
+                move-result-object v0
+                invoke-static { v0 }, $EXTENSION->setUserAgent(Ljava/lang/String;)V
+            """,
+        )
+
+        // Hook 7: CommentReplyTask.j0 at entry: Reddit's reply to a rich-text comment is wrapped as rif expects.
+        commentResponseFingerprint.method.addInstructions(
+            0,
+            """
+                invoke-static { p0, p1 }, $COMMENT_MEDIA->wrapCommentResponse(Ljava/lang/Object;Ljava/io/InputStream;)Ljava/io/InputStream;
                 move-result-object p1
             """,
         )

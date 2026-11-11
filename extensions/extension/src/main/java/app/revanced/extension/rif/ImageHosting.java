@@ -203,7 +203,7 @@ public final class ImageHosting {
         }
     }
 
-    private interface Progress {
+    interface Progress {
         void sent(long bytes);
 
         /** Starts again from 0 (a retry). */
@@ -789,6 +789,17 @@ public final class ImageHosting {
 
     /** Uploads {@code uri} to Reddit and remembers it for the submit hooks. */
     private static Asset uploadAsset(Uri uri, Context ctx, Progress progress) throws UploadException {
+        Asset asset = uploadOnly(uri, ctx, progress);
+        asset.gif = asset.isVideo() && PostAsGifView.asGif;
+        rememberAsset(asset);
+        synchronized (ASSETS) {
+            lastUploaded = asset;
+        }
+        return asset;
+    }
+
+    /** Uploads {@code uri} to Reddit and returns the asset, without recording it (comment media uses this). */
+    static Asset uploadOnly(Uri uri, Context ctx, Progress progress) throws UploadException {
         Sniff sniff;
         try {
             sniff = countAndSniff(ctx, uri, true);
@@ -836,14 +847,8 @@ public final class ImageHosting {
         }
 
         Context app = ctx.getApplicationContext();
-        Asset asset = new Asset(assetUrl(l.action, l.id), l.id, uri.toString(), app != null ? app : ctx, sniff.mime,
+        return new Asset(assetUrl(l.action, l.id), l.id, uri.toString(), app != null ? app : ctx, sniff.mime,
                 posterUrl, System.currentTimeMillis());
-        asset.gif = video && PostAsGifView.asGif;
-        rememberAsset(asset);
-        synchronized (ASSETS) {
-            lastUploaded = asset;
-        }
-        return asset;
     }
 
     /** Keeps the asset in memory and in SharedPreferences (the URL field outlives this process). */
@@ -1126,13 +1131,13 @@ public final class ImageHosting {
 
     // ------------------------------------------------------------- requests
 
-    private static final class Resp {
+    static final class Resp {
         int code;
         String body;
     }
 
     /** One request to oauth.reddit.com with the user's token; a 401/403 gets a fresh token and one retry. */
-    private static Resp authed(Context ctx, String url, byte[] form) throws UploadException {
+    static Resp authed(Context ctx, String url, byte[] form) throws UploadException {
         String token = token(ctx);
         Resp r = call(ctx, url, form, token);
         if (r.code == 401 || r.code == 403) {
