@@ -405,6 +405,17 @@ val redditImageHostingPatch = bytecodePatch(
 
         // Hook 3: kind=image for our asset URLs.
         val params = submitParamsFingerprint.method
+        // The post lookup after the submit needs rif's user agent too; after process death (a restored
+        // Submit screen) no upload has run to hand it over, so hand it over here as well.
+        requireScratchRegister(params)
+        params.addInstructions(
+            0,
+            """
+                invoke-static { }, $uaMethod
+                move-result-object v0
+                invoke-static { v0 }, $EXTENSION->setUserAgent(Ljava/lang/String;)V
+            """,
+        )
         val returns = params.instructions.withIndex().filter { it.value.opcode == Opcode.RETURN_OBJECT }
         if (returns.isEmpty()) throw PatchException("no return in SubmitTask.d0")
         for ((index, insn) in returns.reversed()) {

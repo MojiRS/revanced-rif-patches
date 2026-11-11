@@ -6,14 +6,18 @@ import android.annotation.TargetApi;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.res.AssetFileDescriptor;
 import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.media.MediaMetadataRetriever;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.OpenableColumns;
 import android.util.Log;
+import android.widget.Toast;
 
 import androidx.core.util.c;
 
@@ -85,32 +89,75 @@ public final class ImageHosting {
     /** Slack (server clock vs this device's) when matching a post by title and creation time. */
     private static final long CLOCK_SLACK_S = 120;
 
-    /** An uploaded asset: where it came from, so a second post can upload it again. */
-    private static final class Asset {
+    /**
+     * An uploaded asset: where it came from, so a second post can upload it again. Kept in memory
+     * and, so that it survives process death and drafts, in SharedPreferences ({@link #persist}).
+     */
+    static final class Asset {
         final String url;
         final String id;
-        final Uri source;
+        /** The picked file's Uri as a string (null when unknown); see {@link #source}. */
+        final String sourceString;
         final Context context;
         /** The file's MIME type (video/... for a video); null when unknown. */
         final String mime;
         /** A video's poster image URL; null for images. */
         final String posterUrl;
+        /** When the upload finished (epoch ms). */
+        final long uploadedAtMs;
+        /** Sent in a post (Reddit's refusal of that post clears it again), so a new post needs a new upload. */
         boolean submitted;
-        /** Title and time of the post made with this asset (see {@link #findPost}). */
+        /** The "post as GIF" switch's last state, for a video restored without the switch on screen. */
+        boolean gif;
+        /** Title and time of the post made with this asset (see {@link #findPost}); not persisted. */
         String title;
         long submittedAtMs;
 
-        Asset(String url, String id, Uri source, Context context, String mime, String posterUrl) {
+        Asset(String url, String id, String sourceString, Context context, String mime, String posterUrl,
+                long uploadedAtMs) {
             this.url = url;
             this.id = id;
-            this.source = source;
+            this.sourceString = sourceString;
             this.context = context;
             this.mime = mime;
             this.posterUrl = posterUrl;
+            this.uploadedAtMs = uploadedAtMs;
         }
 
         boolean isVideo() {
             return isVideoMime(mime);
+        }
+
+        Uri source() {
+            return sourceString != null && sourceString.length() > 0 ? Uri.parse(sourceString) : null;
+        }
+
+        /** Whether the asset may still be posted as it is (Reddit keeps unposted uploads for days). */
+        boolean usable(long now) {
+            return !submitted && now - uploadedAtMs < (isVideo() ? MAX_VIDEO_AGE_MS : MAX_AGE_MS) && (!isVideo() || posterUrl != null);
+        }
+    }
+
+    /**
+     * How long an unposted upload is trusted; older ones are uploaded again. API test 2026-11-11: an
+     * unposted image was still accepted and processed after 45 hours, a video only after 8 minutes
+     * (a video asset 2 days old was accepted by /api/submit but its post never got media), so a video
+     * gets a short limit.
+     */
+    static final long MAX_AGE_MS = 24L * 3600 * 1000;
+    static final long MAX_VIDEO_AGE_MS = 3L * 3600 * 1000;
+    /** Records older than this are forgotten. */
+    private static final long KEEP_MS = 7L * 24 * 3600 * 1000;
+    private static final int MAX_RECORDS = 20;
+    private static final String PREFS = "rif_image_hosting";
+    private static final String PREFS_KEY = "assets";
+
+    static final String PICK_AGAIN = "This upload can't be posted. Pick the media again.";
+
+    /** Thrown by {@link #fixParams} to stop a submit that would post one of our upload URLs as a link. */
+    static final class SubmitRefused extends RuntimeException {
+        SubmitRefused(String message) {
+            super(message);
         }
     }
 
@@ -132,6 +179,12 @@ public final class ImageHosting {
 
     /** The image post just sent (set by {@link #fixParams}, used once by {@link #wrapResponse}). */
     private static Asset pendingPost;
+
+    /** The newest finished upload of this process: the one the "post as GIF" switch belongs to. */
+    private static Asset lastUploaded;
+
+    /** When the last refusal message was shown: rif asks for the post parameters twice. */
+    private static long lastRefusalMs;
 
     /** Error text of the upload that just failed on this thread; see {@link #takeError}. */
     private static final ThreadLocal<String> ERROR = new ThreadLocal<>();
@@ -331,10 +384,14 @@ public final class ImageHosting {
     /**
      * Hook 3: SubmitTask.d0's form parameters. A link post to one of our asset URLs becomes an
      * image post (a video post, with its poster, for a video; a "videogif" post with the same poster
-     * when the "post as GIF" switch is on, see {@link PostAsGifView}). A reused asset makes a broken
-     * post, so one that was sent before is uploaded again.
+     * when the "post as GIF" switch is on, see {@link PostAsGifView}). The upload's record comes from
+     * memory or, after process death or from a restored draft, from SharedPreferences. A reused asset
+     * makes a broken post, so one that was sent before (or is too old) is uploaded again from the
+     * picked file; if that is not possible the submit stops with a message ({@link SubmitRefused})
+     * and the form is kept. An upload URL is never sent as a link.
      */
     public static c<String, String>[] fixParams(c<String, String>[] pairs) {
+        String id = null;
         try {
             if (pairs == null) return pairs;
             int kindAt = -1;
@@ -347,48 +404,108 @@ public final class ImageHosting {
                 else if ("title".equals(pairs[i].a)) titleAt = i;
             }
             if (kindAt < 0 || urlAt < 0 || !"link".equals(pairs[kindAt].b)) return pairs;
-            String url = pairs[urlAt].b;
-            String id = assetIdOf(url);
+            id = assetIdOf(pairs[urlAt].b);
             if (id == null) return pairs;
-            Asset asset;
-            synchronized (ASSETS) {
-                asset = ASSETS.get(id);
-            }
-            if (asset == null) {
-                // Not uploaded by this process (rif restored the URL field after process death).
-                // An image can still be posted; a video would need its poster.
-                if (!isImageHostUrl(url)) {
-                    Log.w(TAG, "video asset " + id + " is not in memory: posted as a link");
-                    return pairs;
-                }
-                asset = new Asset(url, id, null, Settings.context(), null, null);
-            } else if (asset.submitted && asset.source != null) {
-                try {
-                    Asset again = uploadAsset(asset.source, asset.context, null);
-                    asset = again;
-                    pairs[urlAt] = c.a("url", again.url);
-                } catch (Throwable t) {
-                    Log.w(TAG, "re-upload failed: " + t);
-                }
-            }
-            asset.submitted = true;
-            asset.title = titleAt >= 0 ? pairs[titleAt].b : null;
-            asset.submittedAtMs = System.currentTimeMillis();
-            if (asset.isVideo() && asset.posterUrl != null) {
-                pairs[kindAt] = c.a("kind", PostAsGifView.asGif ? "videogif" : "video");
-                c<String, String>[] withPoster = Arrays.copyOf(pairs, pairs.length + 1);
-                withPoster[pairs.length] = c.a("video_poster_url", asset.posterUrl);
-                pairs = withPoster;
-            } else {
-                pairs[kindAt] = c.a("kind", "image");
-            }
-            synchronized (ASSETS) {
-                pendingPost = asset;
-            }
+            return assetParams(pairs, kindAt, urlAt, titleAt, id);
+        } catch (SubmitRefused r) {
+            refuse(r);
+            throw r;
         } catch (Throwable t) {
             Log.w(TAG, "submit params failed", t);
+            if (id == null) return pairs;
+            SubmitRefused r = new SubmitRefused(PICK_AGAIN);
+            refuse(r);
+            throw r;
+        }
+    }
+
+    private static c<String, String>[] assetParams(c<String, String>[] pairs, int kindAt, int urlAt, int titleAt,
+            String id) {
+        Asset asset = lookup(id);
+        long now = System.currentTimeMillis();
+        if (asset == null || !asset.usable(now)) {
+            Log.w(TAG, "asset " + id + (asset == null ? " has no record"
+                    : asset.submitted ? " was sent already" : " is too old") + ": uploading again");
+            String why = PICK_AGAIN;
+            Asset again = null;
+            Uri source = asset != null ? asset.source() : null;
+            Context ctx = asset != null && asset.context != null ? asset.context : Settings.context();
+            if (source != null && ctx != null) {
+                try {
+                    again = uploadAsset(source, ctx, null);
+                } catch (UploadException e) {
+                    Log.w(TAG, "re-upload failed: " + e.getMessage());
+                    if (!"Couldn't read the file.".equals(e.getMessage())) why = e.getMessage();
+                }
+            }
+            if (again == null) throw new SubmitRefused(why);
+            asset = again;
+            pairs[urlAt] = c.a("url", again.url);
+        }
+        asset.submitted = true;
+        asset.title = titleAt >= 0 ? pairs[titleAt].b : null;
+        asset.submittedAtMs = now;
+        if (asset.isVideo()) {
+            // The switch decides while its row is on screen; otherwise (a restored draft) the last state.
+            boolean gif = PostAsGifView.showingVideo() ? PostAsGifView.asGif : asset.gif;
+            asset.gif = gif;
+            pairs[kindAt] = c.a("kind", gif ? "videogif" : "video");
+            c<String, String>[] withPoster = Arrays.copyOf(pairs, pairs.length + 1);
+            withPoster[pairs.length] = c.a("video_poster_url", asset.posterUrl);
+            pairs = withPoster;
+        } else {
+            pairs[kindAt] = c.a("kind", "image");
+        }
+        persist(asset);
+        synchronized (ASSETS) {
+            pendingPost = asset;
         }
         return pairs;
+    }
+
+    /** Tells the user why the submit stopped (a toast; rif adds its own "Submission failed" one). */
+    private static void refuse(SubmitRefused r) {
+        try {
+            final Context ctx = Settings.context();
+            if (ctx == null) return;
+            long now = System.currentTimeMillis();
+            synchronized (ASSETS) {
+                if (now - lastRefusalMs < 4000) return;
+                lastRefusalMs = now;
+            }
+            final String text = r.getMessage();
+            new Handler(Looper.getMainLooper()).post(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        Toast.makeText(ctx, text, Toast.LENGTH_LONG).show();
+                    } catch (Throwable t) {
+                        Log.w(TAG, "refusal toast failed", t);
+                    }
+                }
+            });
+        } catch (Throwable t) {
+            Log.w(TAG, "refusal message failed", t);
+        }
+    }
+
+    /**
+     * The "post as GIF" switch changed: remembered with the newest upload, for a draft restored later
+     * without the switch on screen.
+     */
+    static void gifToggled(boolean on) {
+        try {
+            Asset a;
+            synchronized (ASSETS) {
+                a = lastUploaded;
+            }
+            if (a != null && a.isVideo() && !a.submitted && a.gif != on) {
+                a.gif = on;
+                persist(a);
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "gif state not saved", t);
+        }
     }
 
     /**
@@ -410,8 +527,16 @@ public final class ImageHosting {
             return new ByteArrayInputStream(new byte[0]);
         }
         try {
-            String userPage = pendingReplyUserPage(new String(raw, UTF8));
-            if (userPage == null) return new ByteArrayInputStream(raw);
+            String text = new String(raw, UTF8);
+            String userPage = pendingReplyUserPage(text);
+            if (userPage == null) {
+                if (hasErrors(text) && asset.submitted) {
+                    // Reddit refused the post: the upload is unused, so a retry needs no new one.
+                    asset.submitted = false;
+                    persist(asset);
+                }
+                return new ByteArrayInputStream(raw);
+            }
             String[] post = waitForPost(asset);
             String reply = post != null
                     ? successReply("https://www.reddit.com" + post[0], post[1])
@@ -432,29 +557,38 @@ public final class ImageHosting {
         return base + "/" + assetId;
     }
 
-    private static final String IMAGE_HOST = "https://reddit-uploaded-media.";
-    private static final String VIDEO_HOST = "https://reddit-uploaded-video.";
-
-    /** Whether the URL is on Reddit's image upload bucket (videos have their own). */
-    static boolean isImageHostUrl(String url) {
-        return url != null && url.startsWith(IMAGE_HOST);
-    }
+    private static final String IMAGE_BUCKET = "reddit-uploaded-media";
+    private static final String VIDEO_BUCKET = "reddit-uploaded-video";
 
     static boolean isVideoMime(String mime) {
         return mime != null && mime.startsWith("video/");
     }
 
-    /** The asset id in one of Reddit's upload URLs (…amazonaws.com/{id}, image or video bucket), else null. */
+    /**
+     * The asset id in one of Reddit's upload URLs, else null. Both buckets (images, videos), on S3 or
+     * S3 accelerate, http or https, with the bucket in the host or (path style) in the path.
+     */
     static String assetIdOf(String url) {
-        if (url == null || !(url.startsWith(IMAGE_HOST) || url.startsWith(VIDEO_HOST))) return null;
-        String path = url;
-        int cut = path.indexOf('?');
-        if (cut >= 0) path = path.substring(0, cut);
-        cut = path.indexOf('#');
-        if (cut >= 0) path = path.substring(0, cut);
+        if (url == null) return null;
+        String u = url.trim();
+        int cut = u.indexOf('?');
+        if (cut >= 0) u = u.substring(0, cut);
+        cut = u.indexOf('#');
+        if (cut >= 0) u = u.substring(0, cut);
+        int scheme = u.indexOf("://");
+        if (scheme < 0) return null;
+        String rest = u.substring(scheme + 3);
+        int slash = rest.indexOf('/');
+        if (slash < 0) return null;
+        String host = rest.substring(0, slash).toLowerCase(java.util.Locale.ROOT);
+        String path = rest.substring(slash);
+        boolean ours = host.startsWith(IMAGE_BUCKET + ".") || host.startsWith(VIDEO_BUCKET + ".")
+                || (host.contains("amazonaws.com") && (path.toLowerCase(java.util.Locale.ROOT).startsWith("/" + IMAGE_BUCKET + "/")
+                        || path.toLowerCase(java.util.Locale.ROOT).startsWith("/" + VIDEO_BUCKET + "/")));
+        if (!ours) return null;
         while (path.endsWith("/")) path = path.substring(0, path.length() - 1);
         String id = path.substring(path.lastIndexOf('/') + 1);
-        return id.length() > 0 ? id : null;
+        return id.length() > 0 && !id.equalsIgnoreCase(IMAGE_BUCKET) && !id.equalsIgnoreCase(VIDEO_BUCKET) ? id : null;
     }
 
     /** ISO BMFF brands (after "ftyp") of still images, not videos. */
@@ -560,6 +694,16 @@ public final class ImageHosting {
             return data.optString("user_submitted_page", "");
         } catch (JSONException e) {
             return null;
+        }
+    }
+
+    /** Whether a submit reply says Reddit refused the post (a non-empty json.errors list). */
+    static boolean hasErrors(String body) {
+        try {
+            JSONArray errors = new JSONObject(body).getJSONObject("json").optJSONArray("errors");
+            return errors != null && errors.length() > 0;
+        } catch (JSONException e) {
+            return false;
         }
     }
 
@@ -692,20 +836,133 @@ public final class ImageHosting {
         }
 
         Context app = ctx.getApplicationContext();
-        Asset asset = new Asset(assetUrl(l.action, l.id), l.id, uri, app != null ? app : ctx, sniff.mime, posterUrl);
+        Asset asset = new Asset(assetUrl(l.action, l.id), l.id, uri.toString(), app != null ? app : ctx, sniff.mime,
+                posterUrl, System.currentTimeMillis());
+        asset.gif = video && PostAsGifView.asGif;
         rememberAsset(asset);
+        synchronized (ASSETS) {
+            lastUploaded = asset;
+        }
         return asset;
     }
 
+    /** Keeps the asset in memory and in SharedPreferences (the URL field outlives this process). */
     private static void rememberAsset(Asset asset) {
         synchronized (ASSETS) {
             ASSETS.put(asset.id, asset);
         }
+        persist(asset);
     }
 
-    /** For tests: registers an uploaded asset without uploading anything. */
+    /** The asset for an id: from memory, else from SharedPreferences (after process death, a restored draft). */
+    private static Asset lookup(String id) {
+        synchronized (ASSETS) {
+            Asset a = ASSETS.get(id);
+            if (a != null) return a;
+        }
+        Context ctx = Settings.context();
+        if (ctx == null) return null;
+        try {
+            synchronized (ASSETS) {
+                for (Asset a : assetsFromJson(ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                        .getString(PREFS_KEY, "[]"), ctx)) {
+                    if (a.id.equals(id)) {
+                        ASSETS.put(id, a);
+                        return a;
+                    }
+                }
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "asset records not read", t);
+        }
+        return null;
+    }
+
+    /** Writes the asset's record (replacing an older one for the same id) and forgets stale records. */
+    private static void persist(Asset asset) {
+        Context ctx = asset.context != null ? asset.context : Settings.context();
+        if (ctx == null) return;
+        try {
+            synchronized (ASSETS) {
+                SharedPreferences prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+                List<Asset> all = new ArrayList<>(assetsFromJson(prefs.getString(PREFS_KEY, "[]"), ctx));
+                for (int i = all.size() - 1; i >= 0; i--) {
+                    if (all.get(i).id.equals(asset.id)) all.remove(i);
+                }
+                all.add(asset);
+                prefs.edit().putString(PREFS_KEY, assetsToJson(prune(all, System.currentTimeMillis()))).apply();
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "asset record not saved", t);
+        }
+    }
+
+    /** Drops records older than {@link #KEEP_MS} and all but the newest {@link #MAX_RECORDS}; the list is oldest first. */
+    static List<Asset> prune(List<Asset> all, long now) {
+        List<Asset> kept = new ArrayList<>();
+        for (Asset a : all) {
+            if (now - a.uploadedAtMs < KEEP_MS) kept.add(a);
+        }
+        return kept.size() > MAX_RECORDS ? new ArrayList<>(kept.subList(kept.size() - MAX_RECORDS, kept.size())) : kept;
+    }
+
+    static String assetsToJson(List<Asset> all) {
+        JSONArray out = new JSONArray();
+        try {
+            for (Asset a : all) {
+                JSONObject o = new JSONObject();
+                o.put("id", a.id);
+                o.put("url", a.url);
+                if (a.sourceString != null) o.put("src", a.sourceString);
+                if (a.mime != null) o.put("mime", a.mime);
+                if (a.posterUrl != null) o.put("poster", a.posterUrl);
+                o.put("at", a.uploadedAtMs);
+                o.put("sent", a.submitted);
+                o.put("gif", a.gif);
+                out.put(o);
+            }
+        } catch (JSONException e) {
+            throw new IllegalStateException(e);
+        }
+        return out.toString();
+    }
+
+    /** Parses {@link #assetsToJson}'s output; bad entries are skipped. */
+    static List<Asset> assetsFromJson(String json, Context ctx) {
+        List<Asset> all = new ArrayList<>();
+        try {
+            JSONArray in = new JSONArray(json);
+            for (int i = 0; i < in.length(); i++) {
+                JSONObject o = in.optJSONObject(i);
+                if (o == null) continue;
+                String id = o.optString("id", "");
+                String url = o.optString("url", "");
+                if (id.length() == 0 || url.length() == 0) continue;
+                Asset a = new Asset(url, id, o.has("src") ? o.optString("src", null) : null, ctx,
+                        o.has("mime") ? o.optString("mime", null) : null,
+                        o.has("poster") ? o.optString("poster", null) : null, o.optLong("at", 0));
+                a.submitted = o.optBoolean("sent", false);
+                a.gif = o.optBoolean("gif", false);
+                all.add(a);
+            }
+        } catch (JSONException e) {
+            Log.w(TAG, "asset records unreadable: " + e);
+        }
+        return all;
+    }
+
+    /** For tests: registers an uploaded asset (finished just now) without uploading anything. */
     static void rememberAsset(String id, String url, String mime, String posterUrl) {
-        rememberAsset(new Asset(url, id, null, null, mime, posterUrl));
+        rememberAsset(id, url, mime, posterUrl, System.currentTimeMillis());
+    }
+
+    /** For tests: the same, uploaded at {@code uploadedAtMs}. */
+    static void rememberAsset(String id, String url, String mime, String posterUrl, long uploadedAtMs) {
+        Asset a = new Asset(url, id, null, null, mime, posterUrl, uploadedAtMs);
+        rememberAsset(a);
+        synchronized (ASSETS) {
+            lastUploaded = a;
+        }
     }
 
     /** For tests: forgets every uploaded asset. */
@@ -713,6 +970,7 @@ public final class ImageHosting {
         synchronized (ASSETS) {
             ASSETS.clear();
             pendingPost = null;
+            lastUploaded = null;
         }
     }
 

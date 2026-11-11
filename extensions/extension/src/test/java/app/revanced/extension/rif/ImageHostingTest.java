@@ -96,14 +96,11 @@ public class ImageHostingTest {
         String video = "https://reddit-uploaded-video.s3-accelerate.amazonaws.com/vid2";
         String poster = "https://reddit-uploaded-media.s3-accelerate.amazonaws.com/pst2";
         ImageHosting.rememberAsset("vid2", video, "video/mp4", poster);
-        PostAsGifView.asGif = true;
-        try {
-            c<String, String>[] out = ImageHosting.fixParams(form(video));
-            assertEquals("videogif", value(out, "kind"));
-            assertEquals(video, value(out, "url"));
-        } finally {
-            PostAsGifView.asGif = false;
-        }
+        // The switch's state goes with the record (no row on screen in a unit test).
+        ImageHosting.gifToggled(true);
+        c<String, String>[] out = ImageHosting.fixParams(form(video));
+        assertEquals("videogif", value(out, "kind"));
+        assertEquals(video, value(out, "url"));
         // An image is never a videogif, switch or not.
         String image = "https://reddit-uploaded-media.s3-accelerate.amazonaws.com/img2";
         ImageHosting.rememberAsset("img2", image, "image/png", null);
@@ -139,17 +136,118 @@ public class ImageHostingTest {
     }
 
     @Test
-    public void unknownAssetsAfterProcessDeath() {
+    public void anUploadUrlWithoutAUsableRecordIsNeverPostedAsALink() {
         ImageHosting.forgetAssets();
-        // Image bucket: still an image post. Video bucket without a poster: left as a link.
-        c<String, String>[] image = ImageHosting.fixParams(form("https://reddit-uploaded-media.s3-accelerate.amazonaws.com/old1"));
-        assertEquals("image", value(image, "kind"));
-        c<String, String>[] video = ImageHosting.fixParams(form("https://reddit-uploaded-video.s3-accelerate.amazonaws.com/old2"));
-        assertEquals("link", value(video, "kind"));
-        assertEquals(3, video.length);
+        // No record (image and video bucket), or one that was sent / is too old and has no file to
+        // upload again: the submit stops instead of posting the amazonaws URL as a link.
+        for (String url : new String[] {
+                "https://reddit-uploaded-media.s3-accelerate.amazonaws.com/old1",
+                "https://reddit-uploaded-video.s3-accelerate.amazonaws.com/old2",
+                "http://reddit-uploaded-media.s3.amazonaws.com/old3",
+                "https://s3.amazonaws.com/reddit-uploaded-video/old4"}) {
+            try {
+                ImageHosting.fixParams(form(url));
+                org.junit.Assert.fail("not refused: " + url);
+            } catch (ImageHosting.SubmitRefused expected) {
+                assertEquals(ImageHosting.PICK_AGAIN, expected.getMessage());
+            }
+        }
+        String sent = "https://reddit-uploaded-media.s3-accelerate.amazonaws.com/sent1";
+        ImageHosting.rememberAsset("sent1", sent, "image/png", null);
+        assertEquals("image", value(ImageHosting.fixParams(form(sent)), "kind"));
+        try {
+            ImageHosting.fixParams(form(sent));
+            org.junit.Assert.fail("a second post with the same upload");
+        } catch (ImageHosting.SubmitRefused expected) {
+            // fine
+        }
+        String old = "https://reddit-uploaded-media.s3-accelerate.amazonaws.com/old5";
+        ImageHosting.rememberAsset("old5", old, "image/png", null,
+                System.currentTimeMillis() - ImageHosting.MAX_AGE_MS - 1000);
+        try {
+            ImageHosting.fixParams(form(old));
+            org.junit.Assert.fail("an upload past its age limit");
+        } catch (ImageHosting.SubmitRefused expected) {
+            // fine
+        }
+        // Videos are trusted for a shorter time than images.
+        String aged = "https://reddit-uploaded-video.s3-accelerate.amazonaws.com/aged1";
+        ImageHosting.rememberAsset("aged1", aged, "video/mp4", "https://reddit-uploaded-media.s3.amazonaws.com/p",
+                System.currentTimeMillis() - ImageHosting.MAX_VIDEO_AGE_MS - 1000);
+        try {
+            ImageHosting.fixParams(form(aged));
+            org.junit.Assert.fail("a video past its age limit");
+        } catch (ImageHosting.SubmitRefused expected) {
+            // fine
+        }
+        String young = "https://reddit-uploaded-video.s3-accelerate.amazonaws.com/young1";
+        ImageHosting.rememberAsset("young1", young, "video/mp4", "https://reddit-uploaded-media.s3.amazonaws.com/p",
+                System.currentTimeMillis() - ImageHosting.MAX_VIDEO_AGE_MS + 60000);
+        assertEquals("video", value(ImageHosting.fixParams(form(young)), "kind"));
+        // A video record without its poster can't be a video post either.
+        String bare = "https://reddit-uploaded-video.s3-accelerate.amazonaws.com/bare1";
+        ImageHosting.rememberAsset("bare1", bare, "video/mp4", null);
+        try {
+            ImageHosting.fixParams(form(bare));
+            org.junit.Assert.fail("a video without a poster");
+        } catch (ImageHosting.SubmitRefused expected) {
+            // fine
+        }
         // Other links and other kinds are untouched.
         assertEquals("link", value(ImageHosting.fixParams(form("https://example.com/a.mp4")), "kind"));
         ImageHosting.forgetAssets();
+    }
+
+    @Test
+    public void recordsSurviveASaveAndLoadAndGetPruned() {
+        long now = 10_000_000_000L;
+        java.util.List<ImageHosting.Asset> all = new java.util.ArrayList<>();
+        for (int i = 0; i < 25; i++) {
+            all.add(new ImageHosting.Asset("https://reddit-uploaded-media.s3.amazonaws.com/a" + i, "a" + i,
+                    "content://media/" + i, null, "image/png", null, now - 1000L * (25 - i)));
+        }
+        all.add(0, new ImageHosting.Asset("https://reddit-uploaded-media.s3.amazonaws.com/stale", "stale", null, null,
+                "image/png", null, now - 8L * 24 * 3600 * 1000));
+        java.util.List<ImageHosting.Asset> kept = ImageHosting.prune(all, now);
+        assertEquals(20, kept.size());
+        assertEquals("a5", kept.get(0).id);
+        assertEquals("a24", kept.get(19).id);
+
+        ImageHosting.Asset v = new ImageHosting.Asset("https://reddit-uploaded-video.s3.amazonaws.com/v1", "v1",
+                "content://media/9", null, "video/mp4", "https://reddit-uploaded-media.s3.amazonaws.com/p1", now);
+        v.submitted = true;
+        v.gif = true;
+        java.util.List<ImageHosting.Asset> back = ImageHosting.assetsFromJson(
+                ImageHosting.assetsToJson(java.util.Collections.singletonList(v)), null);
+        assertEquals(1, back.size());
+        ImageHosting.Asset r = back.get(0);
+        assertEquals("v1", r.id);
+        assertEquals(v.url, r.url);
+        assertEquals("content://media/9", r.sourceString);
+        assertEquals("video/mp4", r.mime);
+        assertEquals(v.posterUrl, r.posterUrl);
+        assertEquals(now, r.uploadedAtMs);
+        assertTrue(r.submitted);
+        assertTrue(r.gif);
+        assertEquals(0, ImageHosting.assetsFromJson("not json", null).size());
+        assertEquals(0, ImageHosting.assetsFromJson("[{\"id\":\"x\"}, 5]", null).size());
+    }
+
+    @Test
+    public void aVideoRecordWithoutTheSwitchOnScreenStaysAVideo() {
+        ImageHosting.forgetAssets();
+        String video = "https://reddit-uploaded-video.s3-accelerate.amazonaws.com/vid3";
+        String poster = "https://reddit-uploaded-media.s3-accelerate.amazonaws.com/pst3";
+        ImageHosting.rememberAsset("vid3", video, "video/mp4", poster);
+        // No row on screen (a restored draft): the record's last state decides, "off" by default.
+        assertEquals("video", value(ImageHosting.fixParams(form(video)), "kind"));
+    }
+
+    @Test
+    public void spotsRedditRefusals() {
+        assertTrue(ImageHosting.hasErrors("{\"json\":{\"errors\":[[\"BAD_URL\",\"x\",\"url\"]]}}"));
+        assertFalse(ImageHosting.hasErrors("{\"json\":{\"errors\":[],\"data\":{}}}"));
+        assertFalse(ImageHosting.hasErrors("nope"));
     }
 
     @Test
@@ -164,6 +262,10 @@ public class ImageHostingTest {
         assertEquals("abc", ImageHosting.assetIdOf("https://reddit-uploaded-media.s3-accelerate.amazonaws.com/abc"));
         assertEquals("abc", ImageHosting.assetIdOf("https://reddit-uploaded-media.s3-accelerate.amazonaws.com/abc/?x=1"));
         assertEquals("v1", ImageHosting.assetIdOf("https://reddit-uploaded-video.s3-accelerate.amazonaws.com/v1"));
+        assertEquals("abc", ImageHosting.assetIdOf("http://REDDIT-uploaded-media.s3.amazonaws.com/abc"));
+        assertEquals("abc", ImageHosting.assetIdOf("https://s3.amazonaws.com/reddit-uploaded-media/abc"));
+        assertNull(ImageHosting.assetIdOf("https://s3.amazonaws.com/reddit-uploaded-media/"));
+        assertNull(ImageHosting.assetIdOf("https://s3.amazonaws.com/other-bucket/abc"));
         assertNull(ImageHosting.assetIdOf("https://i.imgur.com/abc.png"));
         assertNull(ImageHosting.assetIdOf(null));
     }
