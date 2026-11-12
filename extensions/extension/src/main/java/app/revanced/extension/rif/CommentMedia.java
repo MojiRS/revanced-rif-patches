@@ -83,6 +83,13 @@ import java.util.regex.Pattern;
  * comment is polled for up to {@link #POLL_MAX_MS} until Reddit has written the media's real link
  * into it; if that doesn't happen, a PNG or GIF placeholder becomes an i.redd.it link and a
  * JPEG or WebP one stays until the thread is reloaded.</li>
+ * <li>{@link #editParams}: editing a comment. The editor shows a comment's own image as rif always
+ * did, as its link (or Reddit's "Processing" placeholder) on a line of its own. If that line is
+ * still there at send, the image is kept: the comment is fetched with its rich text to learn its
+ * own media id (an id in the text alone is never trusted: another comment's id breaks the
+ * comment), the line becomes that id's token and the edit goes out as rich text. Deleting the
+ * line removes the image (a plain text edit, as rif sends today); a new marker adds or replaces
+ * one. Post (self text) edits and edits with neither a marker nor such a link are not touched.</li>
  * </ul>
  * One media object per comment is Reddit's rule. A marker is only a label: the file it stands for
  * is kept in SharedPreferences ({@link Rec}), so it survives rotation, process death and rif's drafts.
@@ -101,6 +108,11 @@ public final class CommentMedia {
     static final String NO_VIDEO = "Videos can't go in comments yet.";
     static final String TOO_LONG = "No room in the comment for the image.";
     static final String GIF_TOO_BIG = "The GIF is over Reddit's 100 MB limit.";
+    static final String ONE_ONLY_EDIT = "Only one image per comment. Delete the old image's link first.";
+    static final String CHECK_FAILED = "Couldn't check the comment's image. Try again.";
+
+    /** Where the edit dialog's arguments carry the edited comment's post (t3_ name); the patch puts it there. */
+    static final String ARG_EDIT_LINK = "rif_edit_link";
 
     /** Reddit's lease limit for a GIF. */
     static final long MAX_GIF_BYTES = 100L * 1024 * 1024;
@@ -452,6 +464,115 @@ public final class CommentMedia {
         return sub != null && sub.toLowerCase(java.util.Locale.ROOT).startsWith("u_");
     }
 
+    // ------------------------------------------------------ edits (pure)
+
+    /** The media a comment has, as Reddit keeps it: its id, block type and MIME type (may be empty). */
+    static final class Own {
+        final String id;
+        final boolean gif;
+        final String mime;
+
+        Own(String id, boolean gif, String mime) {
+            this.id = id;
+            this.gif = gif;
+            this.mime = mime;
+        }
+    }
+
+    /**
+     * The comment's own media from a listing fetched with {@code rtj=yes}: the first img/gif block of
+     * its {@code rtjson} document (an object, or the same as a JSON string), else the only entry of
+     * its {@code media_metadata}. Null when it has none.
+     */
+    static Own ownMedia(JSONObject comment) {
+        if (comment == null) return null;
+        JSONObject meta = comment.optJSONObject("media_metadata");
+        Object rt = comment.opt("rtjson");
+        if (rt instanceof String) {
+            try {
+                rt = new JSONObject((String) rt);
+            } catch (JSONException e) {
+                rt = null;
+            }
+        }
+        if (rt instanceof JSONObject) {
+            JSONObject block = firstMediaBlock(((JSONObject) rt).optJSONArray("document"));
+            if (block != null) {
+                String id = block.optString("id", "");
+                JSONObject m = meta != null ? meta.optJSONObject(id) : null;
+                return new Own(id, "gif".equals(block.optString("e")), m != null ? m.optString("m", "") : "");
+            }
+            return null;
+        }
+        if (meta == null || meta.length() != 1) return null;
+        String id = meta.keys().next();
+        JSONObject m = meta.optJSONObject(id);
+        if (m == null || id.length() == 0) return null;
+        String e = m.optString("e", "");
+        if (!"Image".equals(e) && !"AnimatedImage".equals(e)) return null;
+        return new Own(id, "AnimatedImage".equals(e), m.optString("m", ""));
+    }
+
+    private static JSONObject firstMediaBlock(Object node) {
+        if (node instanceof JSONArray) {
+            JSONArray a = (JSONArray) node;
+            for (int i = 0; i < a.length(); i++) {
+                JSONObject found = firstMediaBlock(a.opt(i));
+                if (found != null) return found;
+            }
+        } else if (node instanceof JSONObject) {
+            JSONObject o = (JSONObject) node;
+            String e = o.optString("e", "");
+            if (("img".equals(e) || "gif".equals(e)) && o.optString("id", "").length() > 0) return o;
+            return firstMediaBlock(o.opt("c"));
+        }
+        return null;
+    }
+
+    /** The forms a comment's media takes in its markdown body, for the id {@code id} (a regex). */
+    private static String refForms(String id) {
+        String url = "https?://(?:preview|i)\\.redd\\.it/" + id + "\\.[A-Za-z0-9]+(?:\\?[^\\s)\\]]*)?";
+        return "\\[[^\\]\\n]*\\]\\(\\s*" + url + "\\s*\\)"   // [text](url)
+                + "|<" + url + ">"                            // <url>
+                + "|" + url                                   // a bare url
+                + "|\\*Processing (?:img|gif) " + id + "\\.\\.\\.\\*" // Reddit's placeholder
+                + "|!\\[(?:img|gif)\\]\\(" + id + "\\)";      // the token itself
+    }
+
+    private static final Pattern ANY_REF = Pattern.compile(refForms("[A-Za-z0-9]+"));
+
+    /** Whether the text holds something that could be a comment's own media (a lookup decides). */
+    static boolean hasMediaCandidate(String text) {
+        return text != null && ANY_REF.matcher(text).find();
+    }
+
+    /** The span {start, end} of the first reference to media {@code id} in the text, or null. */
+    static int[] findOwnRef(String text, String id) {
+        if (text == null || id == null || id.length() == 0) return null;
+        Matcher m = Pattern.compile(refForms(Pattern.quote(id))).matcher(text);
+        return m.find() ? new int[] {m.start(), m.end()} : null;
+    }
+
+    /**
+     * The post (id36) an edited comment belongs to: the post name the patch put in the dialog's
+     * arguments, else the comment's parent when that is a post. Null when neither is known.
+     */
+    static String linkId36(String link, String parent) {
+        String s = link != null && link.startsWith("t3_") ? link : parent != null && parent.startsWith("t3_") ? parent : null;
+        if (s == null) return null;
+        s = s.substring(3);
+        return s.matches("[a-z0-9]{1,20}") ? s : null;
+    }
+
+    /** What an edit sends. */
+    enum EditPlan { UNCHANGED, KEEP, NEW, CONFLICT }
+
+    /** The plan from whether the comment's own image is still referenced and whether a new one was picked. */
+    static EditPlan editPlan(boolean ownRef, boolean marker) {
+        if (ownRef) return marker ? EditPlan.CONFLICT : EditPlan.KEEP;
+        return marker ? EditPlan.NEW : EditPlan.UNCHANGED;
+    }
+
     /** A picked file, as kept for its marker. */
     static final class Rec {
         final String marker;
@@ -569,11 +690,32 @@ public final class CommentMedia {
         final WeakReference<EditText> editor;
         final WeakReference<TextView> progress;
         final String sub;
+        /** The edited comment's name (t1_), or null for a reply. */
+        final String edit;
 
-        Dialog(EditText editor, TextView progress, String sub) {
+        Dialog(EditText editor, TextView progress, String sub, String edit) {
             this.editor = new WeakReference<>(editor);
             this.progress = new WeakReference<>(progress);
             this.sub = sub;
+            this.edit = edit;
+        }
+    }
+
+    /** Edited comment name → its post's id36, from each edit dialog's arguments (the edit task only has the name). */
+    private static final Map<String, String> EDIT_LINKS = Collections.synchronizedMap(new HashMap<String, String>());
+    /** Edited comment name → its own media as looked up when the dialog opened (absent: unknown; NO_MEDIA: none). */
+    private static final Map<String, Own> OWN = Collections.synchronizedMap(new HashMap<String, Own>());
+    private static final Own NO_MEDIA = new Own("", false, "");
+
+    /**
+     * Hook (reply dialog factories for comment edits, right after the edited comment's name went in
+     * the arguments): adds the comment's post name ({@code link_id}) to them.
+     */
+    public static void putEditLink(Bundle args, String link) {
+        try {
+            if (args != null && link != null) args.putString(ARG_EDIT_LINK, link);
+        } catch (Throwable t) {
+            Log.w(TAG, "edit link not kept", t);
         }
     }
 
@@ -595,17 +737,28 @@ public final class CommentMedia {
 
     /**
      * Hook (reply dialog's onCreateView, after the formatting bar got its editor): adds the image
-     * button after the bar's link button. Not for private-message replies and comment edits.
-     * {@code args} are the dialog's arguments (parentKind, editThingName, subreddit).
+     * button after the bar's link button. Not for private-message replies. {@code args} are the
+     * dialog's arguments (parentKind, editThingName, subreddit, and for a comment edit the
+     * parentThingName and our {@link #ARG_EDIT_LINK}).
      */
     public static void onReplyDialog(Object fragment, View bar, EditText editor, Bundle args) {
         try {
             if (bar == null || editor == null) return;
             String kind = args != null ? args.getString("parentKind") : null;
             String edit = args != null ? args.getString("editThingName") : null;
-            if ("t4".equals(kind) || (edit != null && edit.length() > 0)) return;
+            if ("t4".equals(kind)) return;
+            if (edit != null && !edit.startsWith("t1_")) return;
             final String sub = args != null ? args.getString("subreddit") : null;
             Context ctx = bar.getContext();
+            if (edit != null) {
+                String link = linkId36(args.getString(ARG_EDIT_LINK), args.getString("parentThingName"));
+                if (link != null) {
+                    EDIT_LINKS.put(edit, link);
+                    fetchOwn(ctx.getApplicationContext() != null ? ctx.getApplicationContext() : ctx, edit, link);
+                } else {
+                    Log.w(TAG, "edit of " + edit + ": post not known");
+                }
+            }
             Activity activity = activityOf(ctx);
             if (activity == null) return;
             Context pkgCtx = ctx.getApplicationContext() != null ? ctx.getApplicationContext() : ctx;
@@ -617,7 +770,7 @@ public final class CommentMedia {
             ImageButton button = makeButton(ctx, bar, link);
             if (button == null) return;
             TextView progress = addProgressView(ctx, bar);
-            final Dialog dialog = new Dialog(editor, progress, sub);
+            final Dialog dialog = new Dialog(editor, progress, sub, edit);
             button.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
@@ -751,6 +904,10 @@ public final class CommentMedia {
             toast(ONE_ONLY);
             return;
         }
+        if (keepsOwn(dialog, editor.getText().toString())) {
+            toast(ONE_ONLY_EDIT);
+            return;
+        }
         List<String> rules = rulesFor(dialog.sub);
         if (!allowsAny(rules)) {
             toast(NO_IMAGES);
@@ -769,6 +926,48 @@ public final class CommentMedia {
 
     private static boolean hasKnownMarker(Context ctx, String text) {
         return !knownMarkers(text, knownMarkerSet(ctx)).isEmpty();
+    }
+
+    /** An edit whose text still holds the comment's own image (as far as the lookup at open knows). */
+    private static boolean keepsOwn(Dialog dialog, String text) {
+        if (dialog.edit == null) return false;
+        Own own = OWN.get(dialog.edit);
+        return own != null && own != NO_MEDIA && findOwnRef(text, own.id) != null;
+    }
+
+    /** Looks up an edited comment's own media off the main thread, for the pick check (the send looks again). */
+    private static void fetchOwn(final Context ctx, final String edit, final String link) {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    Own own = lookupOwn(ctx, edit, link);
+                    OWN.put(edit, own != null ? own : NO_MEDIA);
+                } catch (Throwable t) {
+                    Log.w(TAG, "own media of " + edit + " not read: " + t);
+                }
+            }
+        }, "rif-comment-media-own").start();
+    }
+
+    /**
+     * The edited comment's own media, fetched with its rich text; null when it has none. Throws
+     * {@link IOException} when the comment can't be read. Background thread.
+     */
+    private static Own lookupOwn(Context ctx, String edit, String link) throws IOException {
+        String id = edit.substring(3);
+        if (!id.matches("[a-z0-9]{1,20}")) throw new IOException("odd comment name " + edit);
+        String url = API + "/comments/" + link + ".json?comment=" + id + "&raw_json=1&rtj=yes&limit=1&context=0";
+        ImageHosting.Resp r;
+        try {
+            r = ImageHosting.authed(ctx, url, null);
+        } catch (ImageHosting.UploadException e) {
+            throw new IOException(e.getMessage());
+        }
+        if (r.code != 200) throw new IOException("HTTP " + r.code);
+        JSONObject comment = commentFromListing(r.body, id);
+        if (comment == null) throw new IOException("comment not in the listing");
+        return ownMedia(comment);
     }
 
     /** The headless fragment that runs the system picker and receives its result (rif's dialog has no result callback). */
@@ -934,6 +1133,10 @@ public final class CommentMedia {
             toast(ONE_ONLY);
             return;
         }
+        if (keepsOwn(dialog, orig)) {
+            toast(ONE_ONLY_EDIT);
+            return;
+        }
         Set<String> taken = new HashSet<>();
         for (Rec r : loadRecords(ctx)) {
             if (!r.uri.equals(pick.uri.toString())) taken.add(r.marker);
@@ -1065,6 +1268,91 @@ public final class CommentMedia {
         } finally {
             if (working) hideProgress();
         }
+    }
+
+    /**
+     * Hook (EditTask.d0, before it returns; background thread). Post edits (t3_), and comment edits
+     * with neither a picked image nor anything that could be the comment's own image, are returned
+     * as they are. Otherwise the comment's own media is looked up: still referenced → kept (no
+     * upload), a marker → uploaded (added, or replacing the deleted old one), neither → unchanged
+     * (a plain text edit, which drops the image). A failure shows a toast and throws, so rif keeps
+     * the dialog and the text.
+     */
+    public static c<String, String>[] editParams(c<String, String>[] pairs, Object task) {
+        boolean working = false;
+        try {
+            if (pairs == null) return pairs;
+            String text = null;
+            String thing = null;
+            for (c<String, String> p : pairs) {
+                if (p == null) continue;
+                if ("text".equals(p.a)) text = p.b;
+                if ("thing_id".equals(p.a)) thing = p.b;
+            }
+            if (text == null || thing == null || !thing.startsWith("t1_")) return pairs;
+            c<String, String>[] built = BUILT.get(task);
+            if (built != null) return built;
+            Context ctx = Settings.context();
+            if (ctx == null) return pairs;
+            List<Marker> markers = knownMarkers(text, knownMarkerSet(ctx));
+            if (markers.size() > 1) throw fail(ONE_ONLY);
+            boolean candidate = hasMediaCandidate(text);
+            if (markers.isEmpty() && !candidate) return pairs;
+            working = true;
+            int[] ref = null;
+            Own own = null;
+            if (candidate) {
+                String link = EDIT_LINKS.get(thing);
+                if (link == null) {
+                    Log.w(TAG, "edit of " + thing + ": post not known");
+                    throw fail(CHECK_FAILED);
+                }
+                showProgress("Checking image");
+                try {
+                    own = lookupOwn(ctx, thing, link);
+                } catch (IOException e) {
+                    Log.w(TAG, "own media of " + thing + ": " + e.getMessage());
+                    throw fail(CHECK_FAILED);
+                }
+                OWN.put(thing, own != null ? own : NO_MEDIA);
+                if (own != null) ref = findOwnRef(text, own.id);
+            }
+            switch (editPlan(ref != null, !markers.isEmpty())) {
+                case CONFLICT:
+                    throw fail(ONE_ONLY_EDIT);
+                case KEEP:
+                    built = keep(ctx, pairs, text, ref, own, task);
+                    break;
+                case NEW:
+                    built = send(ctx, pairs, text, markers.get(0), task);
+                    break;
+                default:
+                    built = pairs;
+            }
+            BUILT.put(task, built);
+            return built;
+        } catch (SendFailed e) {
+            throw e;
+        } catch (Throwable t) {
+            Log.w(TAG, "edit params failed", t);
+            throw fail("Couldn't save the edit. Try again.");
+        } finally {
+            if (working) hideProgress();
+        }
+    }
+
+    /** An edit that keeps the comment's own media: its reference becomes the media's token, no upload. */
+    private static c<String, String>[] keep(Context ctx, c<String, String>[] pairs, String text, int[] ref, Own own, Object task) {
+        showProgress("Sending");
+        String markdown = isolate(text, ref[0], ref[1], token(own.id, own.gif));
+        JSONObject document = convert(ctx, markdown);
+        int[] media = countMedia(document, own.id, own.gif);
+        if (media[0] != 1 || media[1] != 1) {
+            Log.w(TAG, "converted edit has " + media[0] + " media blocks, " + media[1] + " ours");
+            throw fail("Couldn't keep the image. Try again.");
+        }
+        SENT.put(task, new Sent(own.id, urlExtension(own.mime)));
+        return withRichtext(pairs, document.toString());
     }
 
     private static c<String, String>[] send(Context ctx, c<String, String>[] pairs, String text, Marker marker, Object task) {

@@ -305,4 +305,108 @@ public class CommentMediaTest {
         assertEquals(kept.get(3).at, back.get(3).at);
         assertTrue(CommentMedia.recsFromJson("garbage").isEmpty());
     }
+
+    // ---------------------------------------------------------------- edits
+
+    private static final String PNG_URL =
+            "https://preview.redd.it/g96cjnoli30i1.png?width=64&format=png&auto=webp&s=559591e0aa460b2b55bca84c580ead62e3e39021";
+
+    @Test
+    public void ownMediaComesFromRtjsonThenMediaMetadata() throws Exception {
+        JSONObject c = new JSONObject("{\"rtjson\":{\"document\":[{\"e\":\"par\",\"c\":[{\"e\":\"text\",\"t\":\"hi\"}]},"
+                + "{\"e\":\"img\",\"id\":\"g96cjnoli30i1\"}]},\"media_metadata\":{\"g96cjnoli30i1\":"
+                + "{\"status\":\"valid\",\"e\":\"Image\",\"m\":\"image/png\"}}}");
+        CommentMedia.Own own = CommentMedia.ownMedia(c);
+        assertEquals("g96cjnoli30i1", own.id);
+        assertFalse(own.gif);
+        assertEquals("image/png", own.mime);
+
+        // rtjson as a string, a GIF block, nested in a quote.
+        c = new JSONObject();
+        c.put("rtjson", "{\"document\":[{\"e\":\"blockquote\",\"c\":[{\"e\":\"gif\",\"id\":\"abc\"}]}]}");
+        own = CommentMedia.ownMedia(c);
+        assertEquals("abc", own.id);
+        assertTrue(own.gif);
+        assertEquals("", own.mime);
+
+        // rtjson without media: none, whatever media_metadata says.
+        c = new JSONObject("{\"rtjson\":{\"document\":[{\"e\":\"par\",\"c\":[{\"e\":\"text\",\"t\":\"x\"}]}]},"
+                + "\"media_metadata\":{\"zz\":{\"e\":\"Image\"}}}");
+        assertNull(CommentMedia.ownMedia(c));
+
+        // No rtjson: the single media_metadata entry.
+        c = new JSONObject("{\"media_metadata\":{\"q1\":{\"e\":\"AnimatedImage\",\"m\":\"image/gif\"}}}");
+        own = CommentMedia.ownMedia(c);
+        assertEquals("q1", own.id);
+        assertTrue(own.gif);
+        assertNull(CommentMedia.ownMedia(new JSONObject("{\"media_metadata\":{\"a\":{\"e\":\"Image\"},\"b\":{\"e\":\"Image\"}}}")));
+        assertNull(CommentMedia.ownMedia(new JSONObject("{\"body\":\"x\"}")));
+        assertNull(CommentMedia.ownMedia(null));
+    }
+
+    @Test
+    public void findsTheOwnReferenceInEveryForm() {
+        String id = "g96cjnoli30i1";
+        String text = "richtext test\n\n" + PNG_URL;
+        int[] r = CommentMedia.findOwnRef(text, id);
+        assertEquals(text.indexOf("https"), r[0]);
+        assertEquals(text.length(), r[1]);
+
+        assertNotNull(CommentMedia.findOwnRef("a\n\nhttps://i.redd.it/" + id + ".gif\n\nb", id));
+        assertNotNull(CommentMedia.findOwnRef("*Processing img " + id + "...*", id));
+        assertNotNull(CommentMedia.findOwnRef("![gif](" + id + ")", id));
+        String link = "[my pic](" + PNG_URL + ")";
+        r = CommentMedia.findOwnRef("x " + link + " y", id);
+        assertEquals(2, r[0]);
+        assertEquals(2 + link.length(), r[1]);
+        r = CommentMedia.findOwnRef("<" + PNG_URL + ">", id);
+        assertEquals(0, r[0]);
+
+        // Another id, another host, or the id alone are not the comment's image.
+        assertNull(CommentMedia.findOwnRef("https://i.redd.it/other123.gif", id));
+        assertNull(CommentMedia.findOwnRef("https://example.com/" + id + ".png", id));
+        assertNull(CommentMedia.findOwnRef("just " + id, id));
+        assertNull(CommentMedia.findOwnRef("https://i.redd.it/" + id + "x.png", id));
+        assertNull(CommentMedia.findOwnRef(text, ""));
+    }
+
+    @Test
+    public void spotsWhatCouldBeMedia() {
+        assertTrue(CommentMedia.hasMediaCandidate("x\n\n" + PNG_URL));
+        assertTrue(CommentMedia.hasMediaCandidate("https://i.redd.it/abc.gif"));
+        assertTrue(CommentMedia.hasMediaCandidate("*Processing gif abc...*"));
+        assertTrue(CommentMedia.hasMediaCandidate("![img](abc)"));
+        assertFalse(CommentMedia.hasMediaCandidate("plain **text** with https://example.com/a.png"));
+        assertFalse(CommentMedia.hasMediaCandidate("https://v.redd.it/abc"));
+        assertFalse(CommentMedia.hasMediaCandidate(null));
+    }
+
+    @Test
+    public void keepingRewritesTheReferenceAsATokenParagraph() {
+        String id = "g96cjnoli30i1";
+        String text = "**bold** intro\n\n" + PNG_URL + "\n\n> quote";
+        int[] r = CommentMedia.findOwnRef(text, id);
+        assertEquals("**bold** intro\n\n![img](" + id + ")\n\n> quote",
+                CommentMedia.isolate(text, r[0], r[1], CommentMedia.token(id, false)));
+        String inline = "see " + "https://i.redd.it/" + id + ".gif" + " here";
+        r = CommentMedia.findOwnRef(inline, id);
+        assertEquals("see\n\n![gif](" + id + ")\n\nhere", CommentMedia.isolate(inline, r[0], r[1], CommentMedia.token(id, true)));
+    }
+
+    @Test
+    public void linkIdComesFromTheArgsOrAPostParent() {
+        assertEquals("1xpucoq", CommentMedia.linkId36("t3_1xpucoq", "t1_abc"));
+        assertEquals("1xpucoq", CommentMedia.linkId36(null, "t3_1xpucoq"));
+        assertNull(CommentMedia.linkId36(null, "t1_abc"));
+        assertNull(CommentMedia.linkId36("t3_BAD/../x", null));
+        assertNull(CommentMedia.linkId36(null, null));
+    }
+
+    @Test
+    public void editPlans() {
+        assertEquals(CommentMedia.EditPlan.UNCHANGED, CommentMedia.editPlan(false, false));
+        assertEquals(CommentMedia.EditPlan.KEEP, CommentMedia.editPlan(true, false));
+        assertEquals(CommentMedia.EditPlan.NEW, CommentMedia.editPlan(false, true));
+        assertEquals(CommentMedia.EditPlan.CONFLICT, CommentMedia.editPlan(true, true));
+    }
 }

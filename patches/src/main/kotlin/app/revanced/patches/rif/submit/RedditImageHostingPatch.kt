@@ -268,6 +268,42 @@ internal val commentResponseFingerprint = fingerprint {
     }
 }
 
+// EditTask (kept names in both builds, shared by comment and post edits): d0() builds the form
+// parameters, m0(InputStream) parses the reply.
+private const val EDIT_TASK = "Lcom/andrewshu/android/reddit/comments/reply/EditTask;"
+private const val COMMENT_THING = "Lcom/andrewshu/android/reddit/things/objects/CommentThing;"
+
+internal val editParamsFingerprint = fingerprint {
+    custom { method, classDef ->
+        classDef.type == EDIT_TASK && method.name == "d0" && method.parameterTypes.isEmpty() &&
+            method.returnType == PAIR_ARRAY
+    }
+}
+
+internal val editResponseFingerprint = fingerprint {
+    custom { method, classDef ->
+        classDef.type == EDIT_TASK && method.name == "m0" && method.params() == listOf("Ljava/io/InputStream;")
+    }
+}
+
+private fun Instruction.isLinkIdGetter() = opcode == Opcode.INVOKE_VIRTUAL &&
+    ((this as ReferenceInstruction).reference as MethodReference).let {
+        it.definingClass == COMMENT_THING && it.parameterTypes.isEmpty() && it.returnType == "Ljava/lang/String;"
+    }
+
+private fun Instruction.isLinkIdString() =
+    opcode == Opcode.CONST_STRING && (this as ReferenceInstruction).reference.toString() == "link_id"
+
+// CommentThing's JSON writer (free d5.b, Platinum e5.b): `"link_id"` then the comment's link getter
+// (free S(), Platinum W()), whose name differs per build.
+internal val commentLinkWriterFingerprint = fingerprint {
+    strings("link_id")
+    custom { method, _ ->
+        val code = method.implementation?.instructions?.toList() ?: return@custom false
+        code.indices.any { i -> code[i].isLinkIdString() && code.getOrNull(i + 1)?.isLinkIdGetter() == true }
+    }
+}
+
 private fun Instruction.isTenMb() =
     opcode == Opcode.CONST_WIDE_32 && (this as WideLiteralInstruction).wideLiteral == TEN_MB
 
@@ -539,6 +575,79 @@ val redditImageHostingPatch = bytecodePatch(
 
         // Hook 7: CommentReplyTask.j0 at entry: Reddit's reply to a rich-text comment is wrapped as rif expects.
         commentResponseFingerprint.method.addInstructions(
+            0,
+            """
+                invoke-static { p0, p1 }, $COMMENT_MEDIA->wrapCommentResponse(Ljava/lang/Object;Ljava/io/InputStream;)Ljava/io/InputStream;
+                move-result-object p1
+            """,
+        )
+
+        // Hook 8: comment edits. The edit factories of the reply dialog (free w5/x5, Platinum l5/m5)
+        // put the edited comment's name in the arguments; right after that, its post's name goes in
+        // too, so the send can look the comment up. The key register of that putString is free
+        // there: the next statement loads its own key (both builds).
+        val linkCode = commentLinkWriterFingerprint.method.instructions.toList()
+        val linkGetter = linkCode.indices
+            .first { linkCode[it].isLinkIdString() && linkCode.getOrNull(it + 1)?.isLinkIdGetter() == true }
+            .let { (linkCode[it + 1] as ReferenceInstruction).reference as MethodReference }
+        val editFactories = replyDialogCreateFingerprint.classDef.methods.filter { m ->
+            AccessFlags.STATIC.isSet(m.accessFlags) && m.parameterTypes.any { it.toString() == COMMENT_THING } &&
+                m.hasString("editThingName")
+        }
+        if (editFactories.size != 2) throw PatchException("reply dialog: ${editFactories.size} edit factories, expected 2")
+        for (factory in editFactories) {
+            val code = factory.instructions.toList()
+            val keyAt = code.indexOfFirst {
+                it.opcode == Opcode.CONST_STRING && (it as ReferenceInstruction).reference.toString() == "editThingName"
+            }
+            val getName = code.getOrNull(keyAt + 1)
+            val put = code.getOrNull(keyAt + 3)
+            val ok = getName is ReferenceInstruction && getName.opcode == Opcode.INVOKE_VIRTUAL &&
+                (getName.reference as MethodReference).name == "getName" &&
+                put is ReferenceInstruction && (put.reference as MethodReference).name == "putString"
+            if (!ok) throw PatchException("reply dialog ${factory.name}: editThingName put not as expected")
+            val comment = (getName as FiveRegisterInstruction).registerC
+            val putRegs = put as FiveRegisterInstruction
+            val bundle = putRegs.registerC
+            val free = putRegs.registerD
+            if (free == bundle || free == comment) throw PatchException("reply dialog ${factory.name}: no free register")
+            factory.addInstructions(
+                keyAt + 4,
+                """
+                    invoke-virtual { v$comment }, $linkGetter
+                    move-result-object v$free
+                    invoke-static { v$bundle, v$free }, $COMMENT_MEDIA->putEditLink(${BUNDLE}Ljava/lang/String;)V
+                """,
+            )
+        }
+
+        // Hook 9: EditTask.d0, before each return: comment edits keep, add or replace their image
+        // (post edits, t3_, and edits without media go out as they are).
+        val editParams = editParamsFingerprint.method
+        requireScratchRegister(editParams)
+        val editReturns = editParams.instructions.withIndex().filter { it.value.opcode == Opcode.RETURN_OBJECT }
+        if (editReturns.isEmpty()) throw PatchException("no return in EditTask.d0")
+        for ((index, insn) in editReturns.reversed()) {
+            val register = (insn as OneRegisterInstruction).registerA
+            editParams.addInstructions(
+                index,
+                """
+                    invoke-static { v$register, p0 }, $COMMENT_MEDIA->editParams(${PAIR_ARRAY}Ljava/lang/Object;)$PAIR_ARRAY
+                    move-result-object v$register
+                """,
+            )
+        }
+        editParams.addInstructions(
+            0,
+            """
+                invoke-static { }, $uaMethod
+                move-result-object v0
+                invoke-static { v0 }, $EXTENSION->setUserAgent(Ljava/lang/String;)V
+            """,
+        )
+
+        // Hook 10: EditTask.m0 at entry: Reddit's reply to a rich-text edit is wrapped as rif expects.
+        editResponseFingerprint.method.addInstructions(
             0,
             """
                 invoke-static { p0, p1 }, $COMMENT_MEDIA->wrapCommentResponse(Ljava/lang/Object;Ljava/io/InputStream;)Ljava/io/InputStream;
