@@ -87,6 +87,18 @@ No settings.
 
 How it works: a hook at the top of rif's link router resolves `/r|u|user/{sub}/s/{code}` links on a background thread (HEAD request, redirects followed by hand, tracking parameters removed) and calls the router again on the main thread with the result. A second hook at the start of `MainActivity`'s VIEW-intent handling does the same for `/r/` links from other apps, then starts a fresh `MainActivity` on the post and finishes the blank one.
 
+## Fix history import
+
+Makes **Settings → Backup → Import settings** restore the history from a backup made with **Export settings and history**. Imported history is added to the current history; nothing is removed.
+
+rif's export puts the history (`browserhistory.db`) in the backup, but its import skips it, so the history was silently lost. The history decides which posts show as read (dimmed titles), so after moving to a new phone every post you had opened looked unread. With this patch those posts show as read again. Posts that are already in the current history are left as they are; the rest are added, with their last-opened time. A backup made with plain **Export settings** has no history, and importing it works as before. If the history in a backup can't be read, the rest of the import still goes through.
+
+Contributed by Arnaumes. It replaces their separate "Import history" patch, which isn't needed with this bundle; using both is harmless, because both only add missing history.
+
+No settings.
+
+How it works: a hook in rif's import task, right after it reads each zip entry's name, calls the extension. For `browserhistory.db` the extension copies the entry to a temporary file in the cache folder (at most 512 MB, and it must start with the SQLite header), opens it read-only through its own connection, and adds every URI that rif's history doesn't have yet, in one transaction through rif's own database helper (so it never fights rif for the lock). It then tells rif's screens the history changed and deletes the copy. Any failure is logged and ignored, and rif's own import carries on. The extension is based on Arnaumes' patch ([github.com/Arnaumes/revanced-rif-import-history](https://github.com/Arnaumes/revanced-rif-import-history), GPL-3.0).
+
 ## Repair broken gallery images
 
 Shows the images of Reddit galleries that fail to load with "Error loading gallery" because Reddit marks some of their images as failed.
