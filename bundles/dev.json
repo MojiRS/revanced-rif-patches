@@ -1,7 +1,7 @@
 {
-  "created_at": "2026-11-14T07:45:09",
-  "description": "Test build, not a release. For stable builds use main/bundles/stable.json.\n\n**Fix:** scrolling past a playing inline video no longer makes the list jump slightly as the video leaves the screen.\n",
-  "download_url": "https://raw.githubusercontent.com/MojiRS/revanced-rif-patches/test-builds/patches-1.9.0-dev11.rvp",
+  "created_at": "2026-11-14T13:34:24",
+  "description": "Test build, not a release. For stable builds use main/bundles/stable.json.\n\n**New:** \"Explain Reddit blocks\". When Reddit temporarily blocks rif and a feed fails to load, rif shows \"Reddit is temporarily blocking requests. Try again in a few minutes.\" instead of \"Error: forbidden\".\n",
+  "download_url": "https://raw.githubusercontent.com/MojiRS/revanced-rif-patches/test-builds/patches-1.9.0-dev12.rvp",
   "signature_download_url": "N/A",
-  "version": "v1.9.0-dev11"
+  "version": "v1.9.0-dev12"
 }
