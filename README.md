@@ -20,7 +20,7 @@ This bundle contains many small, independently-toggleable patches. Options for e
 | **Fix broken markdown links**     | Shows links like `[name](u/name)` as links instead of raw text.                                                                                |
 | **Hide blocked mod comments**     | Adds a setting to hide mod comments from blocked users. Off by default.                                                                        |
 | **Reddit image hosting**          | Uploads images, GIFs and videos for posts to Reddit instead of imgur, as native posts. Adds an image button to comment replies. GIFs and videos are never resized. |
-| **Fix history import**            | Makes "Import settings" restore the history from backups made with "Export settings and history". Imported history is added to the current history; nothing is removed. |
+| **Fix history import**            | Makes "Import settings" (renamed "Import settings and history") restore the history from backups made with "Export settings and history". Imported history is added to the current history; nothing is removed. |
 
 For details on how each patch works and its settings, see [PATCHES.md](PATCHES.md).
 

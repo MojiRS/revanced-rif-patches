@@ -5,6 +5,7 @@ import app.revanced.patcher.extensions.InstructionExtensions.instructions
 import app.revanced.patcher.fingerprint
 import app.revanced.patcher.patch.PatchException
 import app.revanced.patcher.patch.bytecodePatch
+import app.revanced.patcher.patch.resourcePatch
 import app.revanced.patches.rif.settings.revancedSettingsPatch
 import app.revanced.patches.rif.shared.RIF_COMPATIBILITY
 import com.android.tools.smali.dexlib2.Opcode
@@ -30,15 +31,45 @@ internal val importTaskFingerprint = fingerprint {
     }
 }
 
+// rif's Settings → Backup → "Import settings" entry (backup_preferences.xml). Only the strings
+// change, never that XML, which Arnaumes' own bundle edits. Other languages keep rif's text.
+private val IMPORT_STRINGS = mapOf(
+    "pref_settings_import" to "Import settings and history",
+    "pref_settings_import_summary" to "WARNING: Will overwrite ALL settings. Importing history optional.",
+)
+
+private val historyImportStringsPatch = resourcePatch(
+    description = "Renames \"Import settings\" to \"Import settings and history\".",
+) {
+    compatibleWith(*RIF_COMPATIBILITY)
+
+    execute {
+        document("res/values/strings.xml").use { doc ->
+            val nodes = doc.getElementsByTagName("string")
+            var changed = 0
+            for (i in 0 until nodes.length) {
+                val node = nodes.item(i)
+                val text = IMPORT_STRINGS[node.attributes?.getNamedItem("name")?.nodeValue] ?: continue
+                node.textContent = text
+                changed++
+            }
+            if (changed != IMPORT_STRINGS.size) {
+                throw PatchException("expected ${IMPORT_STRINGS.size} import strings, found $changed")
+            }
+        }
+    }
+}
+
 @Suppress("unused")
 val fixHistoryImportPatch = bytecodePatch(
     name = "Fix history import",
-    description = "Makes \"Import settings\" restore the history from backups made with \"Export settings " +
-        "and history\". Imported history is added to the current history; nothing is removed.",
+    description = "Makes \"Import settings\" (renamed \"Import settings and history\") restore the history from " +
+        "backups made with \"Export settings and history\". Imported history is added to the current history; " +
+        "nothing is removed.",
 ) {
     compatibleWith(*RIF_COMPATIBILITY)
     // The extension needs the app Context the settings patch captures.
-    dependsOn(revancedSettingsPatch)
+    dependsOn(historyImportStringsPatch, revancedSettingsPatch)
     extendWith("extensions/extension.rve")
 
     execute {

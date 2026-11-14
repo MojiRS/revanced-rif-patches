@@ -89,7 +89,7 @@ How it works: a hook at the top of rif's link router resolves `/r|u|user/{sub}/s
 
 ## Fix history import
 
-Makes **Settings → Backup → Import settings** restore the history from a backup made with **Export settings and history**. Imported history is added to the current history; nothing is removed.
+Makes **Settings → Backup → Import settings** restore the history from a backup made with **Export settings and history**, and renames the entry **Import settings and history** ("WARNING: Will overwrite ALL settings. Importing history optional."). Imported history is added to the current history; nothing is removed.
 
 rif's export puts the history (`browserhistory.db`) in the backup, but its import skips it, so the history was silently lost. The history decides which posts show as read (dimmed titles), so after moving to a new phone every post you had opened looked unread. With this patch those posts show as read again. Posts that are already in the current history are left as they are; the rest are added, with their last-opened time. A backup made with plain **Export settings** has no history, and importing it works as before. If the history in a backup can't be read, the rest of the import still goes through.
 
@@ -97,7 +97,7 @@ Contributed by Arnaumes. It replaces their separate "Import history" patch, whic
 
 No settings.
 
-How it works: a hook in rif's import task, right after it reads each zip entry's name, calls the extension. For `browserhistory.db` the extension copies the entry to a temporary file in the cache folder (at most 512 MB, and it must start with the SQLite header), opens it read-only through its own connection, and adds every URI that rif's history doesn't have yet, in one transaction through rif's own database helper (so it never fights rif for the lock). It then tells rif's screens the history changed and deletes the copy. Any failure is logged and ignored, and rif's own import carries on. The extension is based on Arnaumes' patch ([github.com/Arnaumes/revanced-rif-import-history](https://github.com/Arnaumes/revanced-rif-import-history), GPL-3.0).
+How it works: the entry's title and summary are rif's own strings, replaced in English (other languages keep rif's text). A hook in rif's import task, right after it reads each zip entry's name, calls the extension. For `browserhistory.db` the extension copies the entry to a temporary file in the cache folder (at most 512 MB, and it must start with the SQLite header), opens it read-only through its own connection, and adds every URI that rif's history doesn't have yet, in one transaction through rif's own database helper (so it never fights rif for the lock). It then tells rif's screens the history changed and deletes the copy. Any failure is logged and ignored, and rif's own import carries on. The extension is based on Arnaumes' patch ([github.com/Arnaumes/revanced-rif-import-history](https://github.com/Arnaumes/revanced-rif-import-history), GPL-3.0).
 
 ## Repair broken gallery images
 
