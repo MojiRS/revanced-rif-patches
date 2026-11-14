@@ -158,3 +158,13 @@ Reddit profile posts are posts to the hidden subreddit `u_<name>`, which rif acc
 No settings.
 
 How it works: the patch moves PICK SUBREDDIT into a row (in both `submit_fragment` layouts) with a copy of itself that says "my profile", hidden at first, so the two look identical. A hook at the end of the Submit fragment's `onCreateView` wires the button, and a hook at the start of the method that writes the "posting as" line (called from `onCreateView` and when the account changes) shows or hides it. The name comes from rif's settings (`q0()`), and the fill goes through the fragment method the subreddit picker's result uses, made public for the extension's stub to call.
+
+## Explain Reddit blocks
+
+Shows "Reddit is temporarily blocking requests. Try again in a few minutes." when Reddit's edge refuses rif's requests with its "You've been blocked by network security" page, instead of rif's "Error: forbidden" with no reason.
+
+Applies to feed listings only (front page, subreddits, multis, search). Comments, inbox and profile errors are unchanged, and so are Reddit's JSON errors that say why (private, quarantined, banned, gated). It can't unblock anything; the block is Reddit's and usually clears by itself in a few minutes.
+
+No settings.
+
+How it works: rif's listing loader reads the body of a 403 as JSON, to learn the reason. A hook there lets the extension read the body first (up to 1 MB), check for the block page's text and, if it matches, remember the loader; rif then gets an identical copy of the body and carries on exactly as before. A second hook at the top of the feed fragment's load-error method asks the extension whether this loader was flagged and, if so, shows the clearer toast and skips rif's.

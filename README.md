@@ -22,6 +22,7 @@ This bundle contains many small, independently-toggleable patches. Options for e
 | **Reddit image hosting**          | Uploads images, GIFs and videos for posts to Reddit instead of imgur, as native posts. Adds an image button to comment replies. GIFs and videos are never resized. |
 | **Fix history import**            | Makes "Import settings" (renamed "Import settings and history") restore the history from backups made with "Export settings and history". Imported history is added to the current history; nothing is removed. |
 | **Post to profile**               | Adds a button to the submit page that posts to your profile.                                                                                   |
+| **Explain Reddit blocks**         | Shows "Reddit is temporarily blocking requests" instead of "Error: forbidden" when Reddit blocks a feed.                                       |
 
 For details on how each patch works and its settings, see [PATCHES.md](PATCHES.md).
 
