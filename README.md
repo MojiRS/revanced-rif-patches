@@ -21,6 +21,7 @@ This bundle contains many small, independently-toggleable patches. Options for e
 | **Hide blocked mod comments**     | Adds a setting to hide mod comments from blocked users. Off by default.                                                                        |
 | **Reddit image hosting**          | Uploads images, GIFs and videos for posts to Reddit instead of imgur, as native posts. Adds an image button to comment replies. GIFs and videos are never resized. |
 | **Fix history import**            | Makes "Import settings" (renamed "Import settings and history") restore the history from backups made with "Export settings and history". Imported history is added to the current history; nothing is removed. |
+| **Post to profile**               | Adds a button to the submit page that posts to your profile.                                                                                   |
 
 For details on how each patch works and its settings, see [PATCHES.md](PATCHES.md).
 

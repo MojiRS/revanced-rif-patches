@@ -148,3 +148,13 @@ Comment replies get an image button too: in the formatting bar (when "show forma
 No settings.
 
 How it works: the picker and preview decoder get small hooks, then four more. The picker's intent also accepts `video/*`; the preview decoder returns a frame for a video (and rotation is skipped for videos). The body of rif's imgur uploader task is replaced by a call into the extension, which asks Reddit for an upload lease (`/api/media/asset.json`, with rif's own sign-in token), posts the file to it and returns the asset URL for rif's URL field. The 10 MB checks (the confirm branch, the dialog's warning, the size state and the resize target) become 20 MB, and for GIFs and videos "needs resize" is always false. A video is streamed from the device as it is; its bucket comes from the lease. `SubmitTask`'s form parameters turn a link post to one of our asset URLs into `kind=image`, or `kind=video` with `video_poster_url` for a video; an asset that was already posted once (a retry after an error) is uploaded again (video and poster), because a reused asset makes a broken post. Reddit answers an image or video post with no post in it, so the reply is read, the user's newest posts are polled for the `i.redd.it` / `v.redd.it` id (up to 30 s, videos 60 s; for a video also the same title posted since) and rif gets a normal reply with the new post's address.
+
+## Post to profile
+
+Adds a **MY PROFILE** button to the Submit screen, on the same line as PICK SUBREDDIT, under the "choose a subreddit" field.
+
+Reddit profile posts are posts to the hidden subreddit `u_<name>`, which rif accepts when typed in but never mentions. The button fills `u_<your name>` into the field, exactly as picking a subreddit does, so the rules and flair refresh as for any subreddit. It uses the account that is active when you tap, and is hidden when you are logged out. It is on all three tabs (link, text, media), which share the field.
+
+No settings.
+
+How it works: the patch moves PICK SUBREDDIT into a row (in both `submit_fragment` layouts) with a copy of itself that says "my profile", hidden at first, so the two look identical. A hook at the end of the Submit fragment's `onCreateView` wires the button, and a hook at the start of the method that writes the "posting as" line (called from `onCreateView` and when the account changes) shows or hides it. The name comes from rif's settings (`q0()`), and the fill goes through the fragment method the subreddit picker's result uses, made public for the extension's stub to call.
