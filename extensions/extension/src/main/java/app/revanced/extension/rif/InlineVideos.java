@@ -1373,6 +1373,7 @@ public final class InlineVideos {
                     ? video.getBitmap(video.getWidth() / 2, video.getHeight() / 2)
                     : video.getBitmap();
             if (frame == null) return;
+            frame = cropToPicture(video, frame);
             VideoSpan span = overlay.span;
             Drawable snapshot = new BitmapDrawable(Resources.getSystem(), frame);
             span.snapshot = snapshot;
@@ -1385,6 +1386,24 @@ public final class InlineVideos {
         } catch (Throwable t) {
             Log.w(TAG, "snapshot failed", t);
         }
+    }
+
+    /**
+     * getBitmap() copies the decoder's whole buffer, padding included, but the screen shows only
+     * its crop. Phone decoders pad (e.g. 854 -> 864 rows), so the still frame came out squeezed
+     * and the picture "stretched" when the video took over. Cut the frame to the crop, read from
+     * the SurfaceTexture's transform matrix (vertical flip * crop scale/offset).
+     */
+    private static Bitmap cropToPicture(TextureView video, Bitmap frame) {
+        SurfaceTexture st = video.getSurfaceTexture();
+        if (st == null) return frame;
+        float[] m = new float[16];
+        st.getTransformMatrix(m);
+        int[] r = VideoCrop.pictureRect(m, frame.getWidth(), frame.getHeight());
+        if (r == null) return frame;
+        Bitmap cropped = Bitmap.createBitmap(frame, r[0], r[1], r[2] - r[0], r[3] - r[1]);
+        if (cropped != frame) frame.recycle();
+        return cropped;
     }
 
     private static void clearSnapshot(VideoSpan span, Overlay overlay) {
