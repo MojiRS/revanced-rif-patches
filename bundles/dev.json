@@ -1,7 +1,7 @@
 {
-  "created_at": "2026-11-16T04:27:47",
-  "description": "Test build, not a release. For stable builds use main/bundles/stable.json.\n\nImage links typed by hand with a capital letter (Https://i.redd.it/...) now count as the post's or comment's own image, so editing the post or comment keeps that image.\nTest: edit a post's image link to Https://, add another image in the same edit; edit a comment's image link to Https://.\n",
-  "download_url": "https://raw.githubusercontent.com/MojiRS/revanced-rif-patches/test-builds/patches-1.9.0-dev18.rvp",
+  "created_at": "2026-11-16T04:46:36",
+  "description": "Test build, not a release. For stable builds use main/bundles/stable.json.\n\nAn image link typed with a capital letter (Https://...) is now hidden under its inline image, like a lowercase one.\nTest: open the post from the dev18 test whose link reads Https://.\n",
+  "download_url": "https://raw.githubusercontent.com/MojiRS/revanced-rif-patches/test-builds/patches-1.9.0-dev19.rvp",
   "signature_download_url": "N/A",
-  "version": "v1.9.0-dev18"
+  "version": "v1.9.0-dev19"
 }
