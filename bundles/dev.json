@@ -1,7 +1,7 @@
 {
-  "created_at": "2026-11-16T04:46:36",
-  "description": "Test build, not a release. For stable builds use main/bundles/stable.json.\n\nAn image link typed with a capital letter (Https://...) is now hidden under its inline image, like a lowercase one.\nTest: open the post from the dev18 test whose link reads Https://.\n",
-  "download_url": "https://raw.githubusercontent.com/MojiRS/revanced-rif-patches/test-builds/patches-1.9.0-dev19.rvp",
+  "created_at": "2026-11-16T05:01:19",
+  "description": "Test build, not a release. For stable builds use main/bundles/stable.json.\n\n1.9.0-dev20\n- Fix: in a text post, text after an inline image that loaded late (e.g. a table or quote) was drawn over the image, with blank space below.\nTest: open a text post with an image followed by more text, the first time (not cached); the text should sit below the image.\n",
+  "download_url": "https://raw.githubusercontent.com/MojiRS/revanced-rif-patches/test-builds/patches-1.9.0-dev20.rvp",
   "signature_download_url": "N/A",
-  "version": "v1.9.0-dev19"
+  "version": "v1.9.0-dev20"
 }
