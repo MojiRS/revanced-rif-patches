@@ -108,8 +108,14 @@ public final class InlineImages {
         }
     }
 
-    // Resolved page-link -> image URL (or "" = no image found), to avoid re-scraping.
+    // Resolved page-link -> image URL (or "" = the host says there's no image), to avoid
+    // re-scraping.
     private static final LruCache<String, String> RESOLVED = new LruCache<>(256);
+    // Lookup key ("og:" or "album:" + link) -> when it last failed (uptime ms). A failed
+    // request is retried after RETRY_FAILED_MS rather than remembered for the session, so a
+    // link comes back once the network does.
+    private static final LruCache<String, Long> FAILED = new LruCache<>(256);
+    private static final long RETRY_FAILED_MS = 2 * 60 * 1000;
 
     private static final String TAG = "RifInlineImages";
     // Browser-like UA; some CDNs reject unusual agents. Used for images and pages.
@@ -287,7 +293,7 @@ public final class InlineImages {
                         continue;
                     }
                     String linkText = body.subSequence(start, end).toString();
-                    boolean bare = linkText.equals(p.link.getURL()) || isHideableLinkText(linkText);
+                    boolean bare = isBareLinkText(linkText, p.link.getURL()) || isHideableLinkText(linkText);
                     if (!media.missing) {
                         Built built = build(media, p.link, bare);
                         if (built == null) continue;
@@ -440,6 +446,14 @@ public final class InlineImages {
                     tv.setText(tv.getText());
                 } else {
                     tv.requestLayout();
+                    // Selectable text (the comments-page post body) draws from per-block
+                    // display lists, and a block is only moved when it is re-recorded: after
+                    // an image taller than its placeholder fills in, later blocks kept their
+                    // old place and were drawn over it (text over the image, blank space
+                    // below). Re-setting the shadow to its own values re-records every block
+                    // (Editor.invalidateTextDisplayList) without losing a selection.
+                    tv.setShadowLayer(tv.getShadowRadius(), tv.getShadowDx(), tv.getShadowDy(),
+                            tv.getShadowColor());
                     tv.invalidate();
                 }
                 // Span changes don't fire TextWatchers: re-attach here (fits the image,
@@ -843,6 +857,7 @@ public final class InlineImages {
         if (!m.matches()) return null;
         Album cached = ALBUMS.get(url);
         if (cached != null) return cached == Album.NONE ? null : cached;
+        if (recentlyFailed("album:" + url)) return null; // og:image cover meanwhile
         String text = InlineCache.getText("album:" + url);
         if (text != null && text.isEmpty()) { // known not listable
             ALBUMS.put(url, Album.NONE);
@@ -863,12 +878,17 @@ public final class InlineImages {
             else if (gallery == null) album = null; // a failed request: "none" isn't certain
             // else: NONE only if both answered none (album stays null if it failed)
         }
-        ALBUMS.put(url, album == null ? Album.NONE : album);
+        if (album == null) {
+            // A failed request: fall back to the cover for now, try the album again later.
+            FAILED.put("album:" + url, SystemClock.uptimeMillis());
+            return null;
+        }
+        ALBUMS.put(url, album);
         if (album == Album.NONE) {
             // imgur answered that it can't be listed: keep that too, for a day, so the link
             // doesn't get a placeholder on every visit. (A failed request isn't kept.)
             InlineCache.putText("album:" + url, "");
-        } else if (album != null) {
+        } else {
             InlineCache.putText("album:" + url, album.serialize());
         }
         return album == Album.NONE ? null : album;
@@ -1541,6 +1561,7 @@ public final class InlineImages {
 
         String cached = RESOLVED.get(url);
         if (cached != null) return cached.isEmpty() ? null : cached;
+        if (recentlyFailed("og:" + url)) return null;
         String stored = InlineCache.getText("og:" + url);
         if (stored != null) { // "" = the page has no image
             RESOLVED.put(url, stored);
@@ -1549,11 +1570,24 @@ public final class InlineImages {
         if (!network) return MISSING_URL;
 
         // "" = the page has no image (kept on disk for a day); null = the request failed
-        // (kept only in memory).
+        // (retried after RETRY_FAILED_MS).
         String image = ShareLinks.isMatrixMedia(url) ? ShareLinks.resolveMatrixMedia(url) : fetchOgImage(url);
-        RESOLVED.put(url, image == null ? "" : image);
-        if (image != null) InlineCache.putText("og:" + url, image);
-        return image == null || image.isEmpty() ? null : image;
+        if (image == null) {
+            FAILED.put("og:" + url, SystemClock.uptimeMillis());
+            return null;
+        }
+        RESOLVED.put(url, image);
+        InlineCache.putText("og:" + url, image);
+        return image.isEmpty() ? null : image;
+    }
+
+    /** True if [key]'s lookup failed less than RETRY_FAILED_MS ago (then it isn't retried yet). */
+    private static boolean recentlyFailed(String key) {
+        Long failedAt = FAILED.get(key);
+        if (failedAt == null) return false;
+        if (SystemClock.uptimeMillis() - failedAt < RETRY_FAILED_MS) return true;
+        FAILED.remove(key);
+        return false;
     }
 
     /**
@@ -1834,6 +1868,25 @@ public final class InlineImages {
      * gif upload as a "[gif]" link). For these we hide the text and show the image
      * inline rather than keeping the marker visible.
      */
+    /**
+     * Whether a link's text is its URL. rif's linkifier lowercases the scheme in the URL
+     * (text "Https://i.redd.it/x.png", typed so by a phone keyboard, has URL "https://..."),
+     * so scheme and host compare in any case; the rest (path, query) exactly.
+     */
+    static boolean isBareLinkText(String text, String url) {
+        if (text == null || url == null) return false;
+        if (text.equals(url)) return true;
+        int a = text.indexOf("://");
+        if (a < 0 || a != url.indexOf("://")) return false;
+        int ea = text.indexOf('/', a + 3);
+        int eb = url.indexOf('/', a + 3);
+        if (ea < 0) ea = text.length();
+        if (eb < 0) eb = url.length();
+        return ea == eb && text.regionMatches(true, 0, url, 0, ea)
+                && text.regionMatches(ea, url, eb, text.length() - ea)
+                && text.length() == url.length();
+    }
+
     static boolean isHideableLinkText(String text) {
         if (text == null) return false;
         return text.trim().equalsIgnoreCase("[gif]");

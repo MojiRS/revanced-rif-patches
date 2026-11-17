@@ -94,6 +94,22 @@ public class InlineImagesTest {
         assertFalse(InlineImages.isHideableLinkText(null));
     }
 
+    @Test
+    public void bareLinkTextMatchesSchemeAndHostInAnyCase() {
+        String url = "https://i.redd.it/7veumlohiw1i1.png";
+        assertTrue(InlineImages.isBareLinkText(url, url));
+        // rif's linkifier lowercases the scheme a phone keyboard capitalised.
+        assertTrue(InlineImages.isBareLinkText("Https://i.redd.it/7veumlohiw1i1.png", url));
+        assertTrue(InlineImages.isBareLinkText("HTTPS://I.REDD.IT/7veumlohiw1i1.png", url));
+        assertTrue(InlineImages.isBareLinkText("Https://imgur.com", "https://imgur.com"));
+        // The path is case-sensitive; other text is not the URL.
+        assertFalse(InlineImages.isBareLinkText("https://i.redd.it/7VEUMLOHIW1I1.png", url));
+        assertFalse(InlineImages.isBareLinkText("https://i.redd.it/7veumlohiw1i1.pn", url));
+        assertFalse(InlineImages.isBareLinkText("my pic", url));
+        assertFalse(InlineImages.isBareLinkText("i.redd.it/7veumlohiw1i1.png", url));
+        assertFalse(InlineImages.isBareLinkText(null, url));
+    }
+
     // fitSize(): screen 1000 x 2000, comment width 1000, fixed height cap 2000.
     private static int[] fit(int w, int h, int widthPct, int heightPct, boolean scale) {
         return InlineImages.fitSize(w, h, 1000, 2000, 2000, widthPct, heightPct, scale);

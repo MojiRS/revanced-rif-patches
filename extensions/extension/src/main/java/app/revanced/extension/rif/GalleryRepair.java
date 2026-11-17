@@ -205,7 +205,7 @@ public final class GalleryRepair {
     }
 
     /** HEAD without redirects: only 200 counts (a wrong extension gives 404 with an image body). */
-    private static boolean headOk(String url) {
+    static boolean headOk(String url) {
         HttpURLConnection c = null;
         try {
             c = (HttpURLConnection) new URL(url).openConnection();

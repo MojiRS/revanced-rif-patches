@@ -58,6 +58,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.WeakHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -876,21 +878,44 @@ public final class InlineVideos {
     private static void release(Player player) {
         if (PLAYERS.get(player.span) == player) PLAYERS.remove(player.span);
         if (focusOwner == player) abandonFocus();
-        try {
-            player.video.release();
-        } catch (Throwable ignored) {
-        }
-        if (player.audio != null) {
-            try {
-                player.audio.release();
-            } catch (Throwable ignored) {
-            }
-        }
+        releaseLater(player.video);
+        if (player.audio != null) releaseLater(player.audio);
         player.audio = null;
         player.prepared = false;
         stopSyncIfIdle();
         overlayChanged(player);
         if (player.owner != null) invalidateText(player.owner);
+    }
+
+    /**
+     * MediaPlayer.release() blocks 40-60 ms (codec teardown). On the main thread it runs as a
+     * scrolled-out row detaches, dropping frames, and the list visibly jumps. One thread keeps
+     * releases in order.
+     */
+    private static final ExecutorService RELEASER = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "RifVideoRelease");
+        t.setDaemon(true);
+        return t;
+    });
+
+    private static void releaseLater(MediaPlayer mp) {
+        // Callbacks still queued on the main thread must not reach our listeners
+        // (the video's onPrepared would start() it).
+        try {
+            mp.setOnPreparedListener(null);
+            mp.setOnInfoListener(null);
+            mp.setOnSeekCompleteListener(null);
+            mp.setOnCompletionListener(null);
+            mp.setOnErrorListener(null);
+            mp.setVolume(0f, 0f); // silent now, not when the release finishes
+        } catch (Throwable ignored) {
+        }
+        RELEASER.execute(() -> {
+            try {
+                mp.release();
+            } catch (Throwable ignored) {
+            }
+        });
     }
 
     /** Releases the overlay's player, remembering where it was (see VideoTexture). */
@@ -900,7 +925,13 @@ public final class InlineVideos {
         // Coming back, a video that was playing with sound stays paused (muted ones resume).
         overlay.span.resume = new Resume(player.position(), player.paused || !player.muted,
                 player.looping, player.ended);
-        if (player.rendering) snapshot(overlay, false);
+        if (player.rendering) {
+            // Scrolled out (the row is detaching; rif's window is still shown): the frame is
+            // only seen briefly on a scroll back, until the player renders again, so take it
+            // at half size. The full-size GPU readback costs 10-20 ms mid-scroll.
+            boolean scrolledOut = overlay.video.getWindowVisibility() == View.VISIBLE;
+            snapshot(overlay, false, scrolledOut);
+        }
         release(player);
     }
 
@@ -1331,9 +1362,18 @@ public final class InlineVideos {
 
     /** As above; [timed] false keeps it until the video renders again. */
     private static void snapshot(Overlay overlay, boolean timed) {
+        snapshot(overlay, timed, false);
+    }
+
+    /** As above; [half] takes the frame at half size (cheaper, see suspend). */
+    private static void snapshot(Overlay overlay, boolean timed, boolean half) {
         try {
-            Bitmap frame = overlay.video.getBitmap();
+            TextureView video = overlay.video;
+            Bitmap frame = half && video.getWidth() > 1 && video.getHeight() > 1
+                    ? video.getBitmap(video.getWidth() / 2, video.getHeight() / 2)
+                    : video.getBitmap();
             if (frame == null) return;
+            frame = cropToPicture(video, frame);
             VideoSpan span = overlay.span;
             Drawable snapshot = new BitmapDrawable(Resources.getSystem(), frame);
             span.snapshot = snapshot;
@@ -1346,6 +1386,24 @@ public final class InlineVideos {
         } catch (Throwable t) {
             Log.w(TAG, "snapshot failed", t);
         }
+    }
+
+    /**
+     * getBitmap() copies the decoder's whole buffer, padding included, but the screen shows only
+     * its crop. Phone decoders pad (e.g. 854 -> 864 rows), so the still frame came out squeezed
+     * and the picture "stretched" when the video took over. Cut the frame to the crop, read from
+     * the SurfaceTexture's transform matrix (vertical flip * crop scale/offset).
+     */
+    private static Bitmap cropToPicture(TextureView video, Bitmap frame) {
+        SurfaceTexture st = video.getSurfaceTexture();
+        if (st == null) return frame;
+        float[] m = new float[16];
+        st.getTransformMatrix(m);
+        int[] r = VideoCrop.pictureRect(m, frame.getWidth(), frame.getHeight());
+        if (r == null) return frame;
+        Bitmap cropped = Bitmap.createBitmap(frame, r[0], r[1], r[2] - r[0], r[3] - r[1]);
+        if (cropped != frame) frame.recycle();
+        return cropped;
     }
 
     private static void clearSnapshot(VideoSpan span, Overlay overlay) {

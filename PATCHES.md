@@ -87,6 +87,18 @@ No settings.
 
 How it works: a hook at the top of rif's link router resolves `/r|u|user/{sub}/s/{code}` links on a background thread (HEAD request, redirects followed by hand, tracking parameters removed) and calls the router again on the main thread with the result. A second hook at the start of `MainActivity`'s VIEW-intent handling does the same for `/r/` links from other apps, then starts a fresh `MainActivity` on the post and finishes the blank one.
 
+## Fix history import
+
+Makes **Settings → Backup → Import settings** restore the history from a backup made with **Export settings and history**, and renames the entry **Import settings and history** ("WARNING: Will overwrite ALL settings. Importing history optional."). Imported history is added to the current history; nothing is removed.
+
+rif's export puts the history (`browserhistory.db`) in the backup, but its import skips it, so the history was silently lost. The history decides which posts show as read (dimmed titles), so after moving to a new phone every post you had opened looked unread. With this patch those posts show as read again. Posts that are already in the current history are left as they are; the rest are added, with their last-opened time. A backup made with plain **Export settings** has no history, and importing it works as before. If the history in a backup can't be read, the rest of the import still goes through.
+
+Contributed by Arnaumes. It replaces their separate "Import history" patch, which isn't needed with this bundle; using both is harmless, because both only add missing history.
+
+No settings.
+
+How it works: the entry's title and summary are rif's own strings, replaced in English (other languages keep rif's text). A hook in rif's import task, right after it reads each zip entry's name, calls the extension. For `browserhistory.db` the extension copies the entry to a temporary file in the cache folder (at most 512 MB, and it must start with the SQLite header), opens it read-only through its own connection, and adds every URI that rif's history doesn't have yet, in one transaction through rif's own database helper (so it never fights rif for the lock). It then tells rif's screens the history changed and deletes the copy. Any failure is logged and ignored, and rif's own import carries on. The extension is based on Arnaumes' patch ([github.com/Arnaumes/revanced-rif-import-history](https://github.com/Arnaumes/revanced-rif-import-history), GPL-3.0).
+
 ## Repair broken gallery images
 
 Shows the images of Reddit galleries that fail to load with "Error loading gallery" because Reddit marks some of their images as failed.
@@ -124,3 +136,43 @@ Adds a setting to hide distinguished (mod and admin) comments from blocked users
 rif already hides a blocked user's comments, but not a distinguished one such as a moderator bot's pinned comment. With **Hide blocked users' mod comments** on (Settings → ReVanced → Blocked users; off by default), those comments disappear too, together with the replies under them, like rif's own blocked-user filter. A comment opened on its own (its permalink) and comments in subreddits you moderate still show.
 
 How it works: Reddit does not mark a blocked mod's comment as a blocked author's; it sends `unrepliable_reason: NEAR_BLOCKED` instead. A hook in rif's blocked-comment filter asks the extension first, passing that flag and the `distinguished` value. When the setting is on and both apply, rif goes straight to its own permalink and moderator checks.
+
+## Reddit image hosting
+
+Uploads images, GIFs and videos for posts to Reddit instead of imgur, and posts them as native image and video posts.
+
+rif's Image tab on the Submit screen uploaded to imgur, which no longer works for everyone. With this patch the tab (renamed "media") works as before (pick, confirm, progress, submit), but the file goes to Reddit's own hosting and the post is a real image post (`i.redd.it`) or video post (`v.redd.it`), not a link. The picker offers images and videos; the confirm dialog and the form's thumbnail show a frame of a video. Images over 20 MB are still shrunk first; GIFs and videos are never resized or re-encoded (Reddit's own size limit applies; videos up to 1 GB). A video's thumbnail is its first frame, uploaded as a second file. The tab's texts no longer mention imgur. One file per post. If the subreddit doesn't allow that kind of post, Reddit's message is shown and the form stays filled.
+
+Comment replies get an image button too: in the formatting bar (when "show formatting" is on), after the link button. It picks a PNG, JPEG, WebP or GIF, and puts a marker like `![img](photo.png)` in the text, as its own paragraph, where you can move or delete it. When the reply is sent the file is uploaded to Reddit (a still image over 20 MB is shrunk; a GIF is never re-encoded, 100 MB at most) and the comment is posted with the image inline; everything else in the text keeps its formatting. Reddit allows one image or GIF per comment, so a second pick is refused. The button is not in private-message replies and edits, and a subreddit that doesn't allow images or GIFs in comments gets a short message instead of the picker. If anything fails the text stays in the dialog.
+
+Post bodies get the same button, in the formatting bar of the Submit screen (on every tab: text, link and image posts, and videos on the media tab) and of the edit dialog of any post. Any number of images and GIFs can go in the body, each as its own paragraph. Reddit only processes images that rif attaches to a post as markdown `![img](<id>)`, and even then they stay on "Processing", so after the post is made rif edits it once: each image becomes a plain `https://i.redd.it/...` link in the body. Rif shows the images inline (with "Inline comment images"); other apps and old Reddit show links. If that edit fails after a few tries, the post stays up and a message says its images may show as "Processing" until you edit it. An edit that adds an image sends every image the post has again (an edit that attaches images deletes the ones it leaves out), including every `i.redd.it` link in the body; if Reddit refuses that because a link is somebody else's, the edit is sent again without the links it can't vouch for, and if it is still refused Reddit's message is shown and the dialog stays.
+
+The submit page's hint "text on link posts cannot be edited after submission" and the "Edit anyway?" question before editing a link, image or video post's text are gone: such text can be edited.
+
+No settings.
+
+How it works: the picker and preview decoder get small hooks, then four more. The picker's intent also accepts `video/*`; the preview decoder returns a frame for a video (and rotation is skipped for videos). The body of rif's imgur uploader task is replaced by a call into the extension, which asks Reddit for an upload lease (`/api/media/asset.json`, with rif's own sign-in token), posts the file to it and returns the asset URL for rif's URL field. The 10 MB checks (the confirm branch, the dialog's warning, the size state and the resize target) become 20 MB, and for GIFs and videos "needs resize" is always false. A video is streamed from the device as it is; its bucket comes from the lease. `SubmitTask`'s form parameters turn a link post to one of our asset URLs into `kind=image`, or `kind=video` with `video_poster_url` for a video; an asset that was already posted once (a retry after an error) is uploaded again (video and poster), because a reused asset makes a broken post. Reddit answers an image or video post with no post in it, so the reply is read, the user's newest posts are polled for the `i.redd.it` / `v.redd.it` id (up to 30 s, videos 60 s; for a video also the same title posted since) and rif gets a normal reply with the new post's address.
+
+## Post to profile
+
+Adds a **MY PROFILE** button to the Submit screen, on the same line as PICK SUBREDDIT, under the "choose a subreddit" field.
+
+Reddit profile posts are posts to the hidden subreddit `u_<name>`, which rif accepts when typed in but never mentions. The button fills `u_<your name>` into the field, exactly as picking a subreddit does, so the rules and flair refresh as for any subreddit. It uses the account that is active when you tap, and is hidden when you are logged out. It is on all three tabs (link, text, media), which share the field.
+
+It also adds **Submit** to the 3-dot menu of your own profile, just above Inbox (as on the front page). It opens the Submit screen with `u_<your name>` already in the "choose a subreddit" field, as if MY PROFILE had been tapped. It is hidden on other users' profiles and when you are logged out.
+
+No settings.
+
+How it works (profile menu): a resource patch adds a hidden `Submit` item (rif's own `submit_link` string) before `menu_inbox` in `res/menu/profile.xml`. Two hooks in the profile menu provider (`user.c$c`): in the prepare method, rif's own `username.equalsIgnoreCase(q0())` result is remembered and, at the method's end, decides whether the item is shown; the start of the item handler takes the tap, reading the account name then, and starts `SubmitActivity` with the `subreddit` extra set to `u_<name>`, which is what rif's own Submit entry does with the current subreddit.
+
+How it works (submit page): the patch moves PICK SUBREDDIT into a row (in both `submit_fragment` layouts) with a copy of itself that says "my profile", hidden at first, so the two look identical. A hook at the end of the Submit fragment's `onCreateView` wires the button, and a hook at the start of the method that writes the "posting as" line (called from `onCreateView` and when the account changes) shows or hides it. The name comes from rif's settings (`q0()`), and the fill goes through the fragment method the subreddit picker's result uses, made public for the extension's stub to call.
+
+## Explain Reddit blocks
+
+Shows "Reddit is temporarily blocking requests. Try again in a few minutes." when Reddit's edge refuses rif's requests with its "You've been blocked by network security" page, instead of rif's "Error: forbidden" with no reason.
+
+Applies to feed listings only (front page, subreddits, multis, search). Comments, inbox and profile errors are unchanged, and so are Reddit's JSON errors that say why (private, quarantined, banned, gated). It can't unblock anything; the block is Reddit's and usually clears by itself in a few minutes.
+
+No settings.
+
+How it works: rif's listing loader reads the body of a 403 as JSON, to learn the reason. A hook there lets the extension read the body first (up to 1 MB), check for the block page's text and, if it matches, remember the loader; rif then gets an identical copy of the body and carries on exactly as before. A second hook at the top of the feed fragment's load-error method asks the extension whether this loader was flagged and, if so, shows the clearer toast and skips rif's.
