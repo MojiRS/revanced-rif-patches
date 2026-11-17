@@ -1,7 +1,7 @@
 {
-  "created_at": "2026-11-16T05:01:19",
-  "description": "Test build, not a release. For stable builds use main/bundles/stable.json.\n\n1.9.0-dev20\n- Fix: in a text post, text after an inline image that loaded late (e.g. a table or quote) was drawn over the image, with blank space below.\nTest: open a text post with an image followed by more text, the first time (not cached); the text should sit below the image.\n",
-  "download_url": "https://raw.githubusercontent.com/MojiRS/revanced-rif-patches/test-builds/patches-1.9.0-dev20.rvp",
+  "created_at": "2026-11-17T00:17:06",
+  "description": "Test build, not a release. For stable builds use main/bundles/stable.json.\n\n1.9.0-rc1\n- Same code as dev20. README rewritten (FAQ); four patch descriptions in Manager shortened to match.\nTest: patch selection screen shows the new descriptions; quick sanity pass of image hosting and inline images.\n",
+  "download_url": "https://raw.githubusercontent.com/MojiRS/revanced-rif-patches/test-builds/patches-1.9.0-rc1.rvp",
   "signature_download_url": "N/A",
-  "version": "v1.9.0-dev20"
+  "version": "v1.9.0-rc1"
 }
