@@ -176,3 +176,13 @@ Applies to feed listings only (front page, subreddits, multis, search). Comments
 No settings.
 
 How it works: rif's listing loader reads the body of a 403 as JSON, to learn the reason. A hook there lets the extension read the body first (up to 1 MB), check for the block page's text and, if it matches, remember the loader; rif then gets an identical copy of the body and carries on exactly as before. A second hook at the top of the feed fragment's load-error method asks the extension whether this loader was flagged and, if so, shows the clearer toast and skips rif's.
+
+## Fix random subreddit
+
+Makes rif's Random button (the sidebar's subreddit picker) open a random subreddit again. Reddit removed `/r/random` and `/r/randnsfw`, so rif showed "Banned subreddit". The patch asks the redditrand.com API (`api.redditrand.com`, an unofficial third-party service) for a random subreddit and opens that; rif then titles the feed and loads the subreddit as it did when Reddit still redirected.
+
+Each tap sends one plain request to redditrand (your IP address, like any web request; no Reddit token, account or cookies). If redditrand is down or its reply can't be read, nothing is replaced and rif shows its usual "Banned subreddit" error. There is no retry. Links to `/r/randnsfw` use redditrand's NSFW pick; there is no NSFW row in the picker.
+
+No settings.
+
+How it works: rif's request base class runs every Reddit request's background step on a worker thread and reads the request URI from one field. A hook at the top of that step lets the extension look at the URI; if it is a listing of `r/random` or `r/randnsfw` (any sort), it makes a blocking request to redditrand (10 s timeout), reads the name from `{"url":"/r/<name>/"}`, and rewrites the URI to `r/<name>` before rif builds its request. The field's `final` flag is removed so it can be replaced. rif's own random mode handles the rest, so refreshing Random picks another subreddit, as it used to.
