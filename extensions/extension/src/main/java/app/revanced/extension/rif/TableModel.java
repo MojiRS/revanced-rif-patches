@@ -279,8 +279,8 @@ final class TableModel {
      * Column widths for [target] px (the available width minus borders). [natural]: each
      * column's width on one line; [min]: its longest word. Fits as is when it can; else shrinks
      * the columns' extra width (natural - min) in proportion, keeping every word whole; if even
-     * the words don't fit, shrinks the minimums in proportion, down to [floor] (so a word breaks
-     * only when it can't fit). With many columns the floors can still exceed [target].
+     * the words don't fit, columns with short words keep them whole and the long-word columns
+     * share the rest equally, down to [floor] (so a word breaks only when it can't fit). With many columns the floors can still exceed [target].
      */
     static int[] columnWidths(int[] natural, int[] min, int target, int floor) {
         int n = natural.length;
@@ -312,28 +312,32 @@ final class TableModel {
             }
             return w;
         }
+        // Words don't all fit. Columns whose longest word fits in an equal share of what's left
+        // keep their words whole (repeat as the share grows); only the columns with longer words
+        // split the rest equally, so short-word columns never break letter by letter.
         boolean[] fixed = new boolean[n];
         long remaining = target;
-        for (int pass = 0; pass <= n; pass++) {
-            long pool = 0;
-            for (int i = 0; i < n; i++) if (!fixed[i]) pool += mn[i];
-            if (pool == 0) break;
-            boolean changed = false;
+        int open = n;
+        boolean changed = true;
+        while (changed && open > 0) {
+            changed = false;
+            long share = remaining / open;
             for (int i = 0; i < n; i++) {
-                if (fixed[i]) continue;
-                long share = mn[i] * remaining / pool;
-                int lo = Math.min(floor, mn[i]);
-                if (share < lo) {
+                if (!fixed[i] && mn[i] <= share) {
                     fixed[i] = true;
-                    w[i] = lo;
-                    remaining -= lo;
+                    w[i] = mn[i];
+                    remaining -= mn[i];
+                    open--;
                     changed = true;
-                    break; // the pool changed: recompute shares
                 }
             }
-            if (!changed) {
-                for (int i = 0; i < n; i++) if (!fixed[i]) w[i] = (int) (mn[i] * remaining / pool);
-                break;
+        }
+        if (open > 0) {
+            long share = remaining / open;
+            long rest = remaining - share * open;
+            for (int i = 0; i < n; i++) {
+                if (fixed[i]) continue;
+                w[i] = (int) Math.max(Math.min(floor, mn[i]), share + (rest-- > 0 ? 1 : 0));
             }
         }
         for (int i = 0; i < n; i++) if (w[i] <= 0) w[i] = Math.min(floor, mn[i]);

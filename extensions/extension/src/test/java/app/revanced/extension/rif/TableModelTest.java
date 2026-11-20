@@ -252,8 +252,19 @@ public class TableModelTest {
         int[] min = {120, 60, 60};
         int[] w = TableModel.columnWidths(new int[]{300, 100, 100}, min, 120, 20);
         assertTrue(sum(w) <= 120);
-        assertTrue(w[0] > w[1]); // still in proportion
         for (int v : w) assertTrue(v >= 20);
+    }
+
+    @Test
+    public void shortWordColumnsStayWholeWhenLongWordsMustBreak() {
+        // 9 columns: 7 with short words (40), 2 with long words (300); 400 px available.
+        int[] min = {40, 40, 300, 40, 40, 40, 300, 40, 40};
+        int[] nat = {80, 80, 900, 80, 80, 80, 900, 80, 80};
+        int[] w = TableModel.columnWidths(nat, min, 400, 20);
+        assertEquals(400, sum(w));
+        for (int i = 0; i < 9; i++) if (min[i] == 40) assertEquals("column " + i, 40, w[i]);
+        assertEquals(60, w[2]);
+        assertEquals(60, w[6]);
     }
 
     @Test

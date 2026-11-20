@@ -202,7 +202,9 @@ public final class InlineTables {
     };
 
     private static CellData buildCell(TableModel.Cell cell) {
-        String html = cell.html.replace("<del>", "<s>").replace("</del>", "</s>");
+        // Html.fromHtml knows <tt> (monospace) but not <code>, and <s> but not <del>.
+        String html = cell.html.replace("<del>", "<s>").replace("</del>", "</s>")
+                .replace("<code>", "<tt>").replace("</code>", "</tt>");
         if (html.contains("md-spoiler-text")) {
             html = html.replaceAll("(?i)<span[^>]*md-spoiler-text[^>]*>", "<" + SPOILER_TAG + ">")
                     .replaceAll("(?i)</span>", "</" + SPOILER_TAG + ">");
