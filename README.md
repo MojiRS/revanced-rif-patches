@@ -11,7 +11,7 @@ The Morphe port of these patches can be found [here](https://github.com/MojiRS/m
 | Patch                             | Description                                                                                                                                    |
 | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Disable ads**                   | Removes all ads. *Not needed for rif golden platinum.*                                                                                         |
-| **Inline comment images**         | Shows images, GIFs and videos linked in comments and text posts inline.                                                                        |
+| **Inline comment images**         | Shows images, GIFs, videos and tables from comments and text posts inline.                                                                     |
 | **Fix comment video links**       | Makes videos posted in comments play in rif's video player instead of failing to load.                                                         |
 | **Fix imgur albums**              | Fixes imgur albums crashing or failing to load.                                                                                                |
 | **Fix YouTube videos**            | Fixes the built-in YouTube player.                                                                                                             |

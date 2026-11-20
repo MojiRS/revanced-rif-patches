@@ -25,6 +25,7 @@ public final class Settings {
     public static final String KEY_INLINE_IMAGES_LONG_PRESS_DELAY = "INLINE_IMAGES_LONG_PRESS_DELAY";
     public static final String KEY_INLINE_VIDEOS = "INLINE_VIDEOS";
     public static final String KEY_INLINE_VIDEOS_AUTOPLAY = "INLINE_VIDEOS_AUTOPLAY";
+    public static final String KEY_INLINE_TABLES = "INLINE_TABLES";
     public static final String KEY_YOUTUBE_CAPTIONS_LANDSCAPE = "YOUTUBE_CAPTIONS_LANDSCAPE";
     public static final String KEY_YOUTUBE_CAPTIONS_VERTICAL = "YOUTUBE_CAPTIONS_VERTICAL";
     public static final String KEY_YOUTUBE_CAPTIONS_SHORTS = "YOUTUBE_CAPTIONS_SHORTS";
@@ -129,6 +130,11 @@ public final class Settings {
 
     public static boolean inlineVideos() {
         return inlineImages() && get(KEY_INLINE_VIDEOS, true);
+    }
+
+    /** Markdown tables drawn inline (on by default; independent of "Inline images"). */
+    public static boolean inlineTables() {
+        return get(KEY_INLINE_TABLES, true);
     }
 
     public static boolean autoplayInlineVideos() {

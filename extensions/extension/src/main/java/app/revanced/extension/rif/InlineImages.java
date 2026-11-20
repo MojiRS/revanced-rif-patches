@@ -771,9 +771,9 @@ public final class InlineImages {
             List<Animatable> current = new ArrayList<>();
             if (cs instanceof Spanned) {
                 Spanned sp = (Spanned) cs;
-                if (sp.getSpans(0, sp.length(), FitImageSpan.class).length > 0) {
-                    // Image taps and long presses need the touch position (rif's body
-                    // TextViews have no touch or long-click listeners of their own).
+                if (sp.getSpans(0, sp.length(), FitImageSpan.class).length > 0 || InlineTables.has(sp)) {
+                    // Image (and table) taps and long presses need the touch position (rif's
+                    // body TextViews have no touch or long-click listeners of their own).
                     tv.setOnTouchListener(TOUCH_LISTENER);
                     tv.setOnLongClickListener(LONG_CLICK);
                     // Fit to the current width now (usually right, as rows are recycled
@@ -1023,10 +1023,16 @@ public final class InlineImages {
         }
     }
 
-    /** True if the last touch on [tv] landed on one of its inline images. */
+    /** The last touch on [v] (x, y in the view), recorded by TOUCH_LISTENER; null if none. */
+    static float[] lastTouch(View v) {
+        return LAST_TOUCH.get(v);
+    }
+
+    /** True if the last touch on [tv] landed on one of its inline images (or tables). */
     private static boolean onImage(TextView tv) {
         CharSequence text = tv.getText();
         if (!(text instanceof Spanned)) return false;
+        if (InlineTables.onTable(tv)) return true;
         for (FitImageSpan span : ((Spanned) text).getSpans(0, text.length(), FitImageSpan.class)) {
             if (!Float.isNaN(tapPosition(tv, span, span.width()))) return true;
         }
@@ -1050,6 +1056,8 @@ public final class InlineImages {
                 // A span change makes the TextView re-flow (and re-draw) that range.
                 sp.setSpan(span, sp.getSpanStart(span), sp.getSpanEnd(span), sp.getSpanFlags(span));
             }
+            // Inline tables take the same width.
+            if (InlineTables.fit(sp, avail)) changed = true;
             if (changed) {
                 tv.requestLayout();
                 tv.invalidate();

@@ -19,6 +19,7 @@ import com.android.tools.smali.dexlib2.iface.instruction.FiveRegisterInstruction
 import com.android.tools.smali.dexlib2.iface.instruction.ReferenceInstruction
 
 private const val EXTENSION = "Lapp/revanced/extension/rif/InlineImages;"
+private const val TABLES_EXTENSION = "Lapp/revanced/extension/rif/InlineTables;"
 private const val STEP_SEEK_BAR = "Lapp/revanced/extension/rif/StepSeekBarPreference;"
 
 // Adds the "Inline media" category to the ReVanced screen. The other checkboxes
@@ -78,6 +79,7 @@ val inlineImagesSettingsResourcePatch = resourcePatch(
                     dependency = "INLINE_VIDEOS",
                 ),
             )
+            category.appendChild(doc.checkBoxPreference("INLINE_TABLES", "Inline tables"))
             category.appendChild(
                 doc.checkBoxPreference(
                     "INLINE_IMAGES_LONG_PRESS_SELECT",
@@ -186,7 +188,7 @@ internal val seekBarProgressChangedFingerprint = fingerprint {
 @Suppress("unused")
 val inlineCommentImagesPatch = bytecodePatch(
     name = "Inline comment images",
-    description = "Shows images, GIFs and videos linked in comments and text posts inline.",
+    description = "Shows images, GIFs, videos and tables from comments and text posts inline.",
 ) {
     compatibleWith(*RIF_COMPATIBILITY)
     dependsOn(inlineImagesSettingsResourcePatch, revancedSettingsPatch)
@@ -196,11 +198,42 @@ val inlineCommentImagesPatch = bytecodePatch(
 
     execute {
         // 1) Embed images into the comment + selftext spannables (background, before
-        // display). p1 = the SpannableStringBuilder argument.
+        // display). p1 = the SpannableStringBuilder argument. Tables are embedded first
+        // (added second, at index 0, so it runs before the images' call): their replaced
+        // range holds links that InlineImages must not see. p0 = the Thing (the callback).
+        // InlineTables.bodyHtml/bodyEscaped are empty stubs; write them to call the callback
+        // interface's getters (names differ per build, RIF_BUILDS), so no reflection is needed.
+        val build = RIF_BUILDS.firstOrNull { it.renderCallback == commentRenderedBodyFingerprint.method.name }
+            ?: throw PatchException("render callback ${commentRenderedBodyFingerprint.method.name} is in no known build")
+        val callbackInterface = build.bodyRenderClass.removeSuffix(";") + "\$b;"
+        val tablesStubs = proxy(classes.first { it.type == TABLES_EXTENSION }).mutableClass.methods
+        tablesStubs.firstOrNull { it.name == "bodyHtml" }?.addInstructions(
+            0,
+            """
+                check-cast p0, $callbackInterface
+                invoke-interface { p0 }, $callbackInterface->${build.bodyHtmlGetter}()Ljava/lang/String;
+                move-result-object v0
+                return-object v0
+            """,
+        ) ?: throw PatchException("InlineTables.bodyHtml not found")
+        tablesStubs.firstOrNull { it.name == "bodyEscaped" }?.addInstructions(
+            0,
+            """
+                check-cast p0, $callbackInterface
+                invoke-interface { p0 }, $callbackInterface->${build.bodyEscapedGetter}()Z
+                move-result v0
+                return v0
+            """,
+        ) ?: throw PatchException("InlineTables.bodyEscaped not found")
+
         for (fingerprint in listOf(commentRenderedBodyFingerprint, threadSelftextEmbedFingerprint)) {
             fingerprint.method.addInstructions(
                 0,
                 "invoke-static { p1 }, $EXTENSION->embed(Landroid/text/SpannableStringBuilder;)V",
+            )
+            fingerprint.method.addInstructions(
+                0,
+                "invoke-static { p0, p1 }, $TABLES_EXTENSION->embed(Ljava/lang/Object;Landroid/text/SpannableStringBuilder;)V",
             )
         }
 
