@@ -1,7 +1,7 @@
 {
-  "created_at": "2026-11-18T04:31:31",
-  "description": "Test build, not a release. For stable builds use main/bundles/stable.json.\n\n**New: Fix random subreddit.** Random (sidebar or /r/random links) opens a random subreddit again, picked by the redditrand.com API. /r/randnsfw links pick an NSFW one.\n",
-  "download_url": "https://raw.githubusercontent.com/MojiRS/revanced-rif-patches/test-builds/patches-1.10.0-dev1.rvp",
+  "created_at": "2026-11-20T19:07:06",
+  "description": "Test build, not a release. For stable builds use main/bundles/stable.json.\n\n**New: Inline tables** (Inline media settings, on by default). Markdown tables in comments and text posts are drawn inline instead of rif's \"[View formatted table]\" link. Tap a link in a cell to open it; tap elsewhere on the table for rif's zoomable popup.\n",
+  "download_url": "https://raw.githubusercontent.com/MojiRS/revanced-rif-patches/test-builds/patches-1.10.0-dev2.rvp",
   "signature_download_url": "N/A",
-  "version": "v1.10.0-dev1"
+  "version": "v1.10.0-dev2"
 }
