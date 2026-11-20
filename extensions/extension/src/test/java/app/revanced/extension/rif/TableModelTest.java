@@ -2,6 +2,7 @@ package app.revanced.extension.rif;
 
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
@@ -233,54 +234,84 @@ public class TableModelTest {
 
     @Test
     public void widthsFitAsIsWhenTheyFit() {
-        assertArrayEquals(new int[]{100, 50}, TableModel.columnWidths(new int[]{100, 50}, new int[]{40, 30}, 200, 10));
+        int[] nat = {100, 50};
+        int[] whole = {60, 40};
+        int[] once = {30, 20};
+        assertArrayEquals(nat, TableModel.columnWidths(nat, whole, once, 200));
+        assertArrayEquals(nat, TableModel.columnWidths(nat, whole, once, 150));
     }
 
     @Test
-    public void widthsShrinkTheExtraProportionallyKeepingWordsWhole() {
-        int[] natural = {400, 100, 100};
-        int[] min = {100, 50, 50};
-        int[] w = TableModel.columnWidths(natural, min, 300, 10);
+    public void wholeWordsFitSoNoColumnGoesBelowItsLongestWord() {
+        int[] nat = {400, 100, 100};
+        int[] whole = {100, 50, 50};
+        int[] once = {50, 25, 25};
+        int[] w = TableModel.columnWidths(nat, whole, once, 300);
         assertEquals(300, sum(w));
-        for (int i = 0; i < 3; i++) assertTrue("column " + i, w[i] >= min[i] && w[i] <= natural[i]);
+        for (int i = 0; i < 3; i++) assertTrue("column " + i, w[i] >= whole[i] && w[i] <= nat[i]);
         // The column with the most to give gives the most.
-        assertTrue(w[0] - min[0] > w[1] - min[1]);
+        assertTrue(w[0] - whole[0] > w[1] - whole[1]);
+        // Exactly the whole words' sum: nothing is left to give.
+        assertArrayEquals(whole, TableModel.columnWidths(nat, whole, once, 200));
     }
 
     @Test
-    public void widthsShrinkWordsOnlyWhenTheyCantFit() {
-        int[] min = {120, 60, 60};
-        int[] w = TableModel.columnWidths(new int[]{300, 100, 100}, min, 120, 20);
-        assertTrue(sum(w) <= 120);
-        for (int v : w) assertTrue(v >= 20);
+    public void wordsBreakOnlyOnceWholeWordsCantFit() {
+        // Whole words sum to 260 > 240 > once minimums' 130: shrink between them.
+        int[] nat = {500, 300, 200};
+        int[] whole = {100, 100, 60};
+        int[] once = {50, 50, 30};
+        int[] w = TableModel.columnWidths(nat, whole, once, 240);
+        assertEquals(240, sum(w));
+        for (int i = 0; i < 3; i++) assertTrue("column " + i, w[i] >= once[i] && w[i] <= whole[i]);
+        assertArrayEquals(once, TableModel.columnWidths(nat, whole, once, 130));
     }
 
     @Test
-    public void shortWordColumnsStayWholeWhenLongWordsMustBreak() {
-        // 9 columns: 7 with short words (40), 2 with long words (300); 400 px available.
-        int[] min = {40, 40, 300, 40, 40, 40, 300, 40, 40};
-        int[] nat = {80, 80, 900, 80, 80, 80, 900, 80, 80};
-        int[] w = TableModel.columnWidths(nat, min, 400, 20);
-        assertEquals(400, sum(w));
-        for (int i = 0; i < 9; i++) if (min[i] == 40) assertEquals("column " + i, 40, w[i]);
-        assertEquals(60, w[2]);
-        assertEquals(60, w[6]);
+    public void overflowGivesTheOnceMinimumsEvenWhenTheyExceedTheTarget() {
+        int[] nat = {300, 400, 200, 300};
+        int[] whole = {120, 140, 100, 90};
+        int[] once = {80, 90, 70, 60};
+        int[] w = TableModel.columnWidths(nat, whole, once, 200);
+        assertArrayEquals(once, w);
+        assertTrue(sum(w) > 200);
     }
 
     @Test
-    public void widthsNeverGoBelowTheFloorEvenIfThatOverflows() {
-        int[] min = new int[10];
-        int[] nat = new int[10];
-        Arrays.fill(min, 80);
-        Arrays.fill(nat, 200);
-        int[] w = TableModel.columnWidths(nat, min, 100, 30);
-        for (int v : w) assertEquals(30, v);
+    public void aMinimumAboveItsNaturalWidthIsClamped() {
+        assertArrayEquals(new int[]{20, 400},
+                TableModel.columnWidths(new int[]{20, 500}, new int[]{50, 450}, new int[]{50, 400}, 100));
     }
 
     @Test
-    public void widthsFloorNeverRaisesAColumnAboveItsMinimum() {
-        int[] w = TableModel.columnWidths(new int[]{20, 500}, new int[]{15, 400}, 100, 40);
-        assertTrue(w[0] >= 15 && w[0] <= 40);
-        assertTrue(w[1] >= 40);
+    public void shortWordsStayWhole() {
+        // Fewer than 6 characters: the whole word's width, however wide.
+        assertEquals(37, TableModel.wordMinimum(5, 37, 20, 17));
+        assertEquals(1, TableModel.wordMinimum(1, 1, 1, 1));
+        assertEquals(-1, TableModel.splitPoint("Fifth", 0, 5));
+    }
+
+    @Test
+    public void longWordsNeedTheirLongerHalfPlusSlack() {
+        // 6 or more characters: the wider half (plus the slack), never above the whole word.
+        assertEquals(30 + TableModel.WORD_SLACK, TableModel.wordMinimum(6, 55, 30, 25));
+        assertEquals(30 + TableModel.WORD_SLACK, TableModel.wordMinimum(7, 60, 25, 30));
+        assertEquals(10, TableModel.wordMinimum(6, 10, 9, 9));
+    }
+
+    @Test
+    public void wordsSplitAfterTheCeilingOfHalfTheirCharacters() {
+        assertEquals(4, TableModel.splitPoint("Seventh", 0, 7)); // 7 chars: first half is 4
+        assertEquals(3, TableModel.splitPoint("Sixths", 0, 6));
+        // Inside a longer text, offsets are in that text.
+        assertEquals(3 + 4, TableModel.splitPoint("a  Seventh", 3, 10));
+    }
+
+    @Test
+    public void aSurrogatePairIsNotSplit() {
+        String word = "ab😀cdef"; // 7 code points, 8 chars: first half = 4 code points
+        int at = TableModel.splitPoint(word, 0, word.length());
+        assertEquals(5, at); // a b <pair> c: the pair counts as one
+        assertFalse(Character.isLowSurrogate(word.charAt(at)));
     }
 }

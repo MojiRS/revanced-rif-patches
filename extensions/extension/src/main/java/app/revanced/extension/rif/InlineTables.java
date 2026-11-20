@@ -3,7 +3,11 @@ package app.revanced.extension.rif;
 import android.content.res.Resources;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.LinearGradient;
 import android.graphics.Paint;
+import android.graphics.PorterDuff;
+import android.graphics.PorterDuffXfermode;
+import android.graphics.Shader;
 import android.graphics.Typeface;
 import android.os.Build;
 import android.os.Looper;
@@ -49,6 +53,8 @@ public final class InlineTables {
     private static final String TAG = "RifInlineTables";
     private static final String POPOUT_SPAN = "com.andrewshu.android.reddit.comments.spans.TablePopoutSpan";
     private static final String SPOILER_TAG = "spoilerx";
+    /** Width of the fade at the right edge of a table that runs off it. */
+    private static final float FADE_DP = 24f;
 
     // ---- background: embed ----------------------------------------------------
 
@@ -417,7 +423,7 @@ public final class InlineTables {
                 fm.descent = 0;
                 fm.bottom = 0;
             }
-            return b.width;
+            return b.visible;
         }
 
         @Override
@@ -427,11 +433,18 @@ public final class InlineTables {
             float oy = y - b.height;
             drawX = x;
             drawY = oy;
-            drawW = b.width;
+            drawW = b.visible; // taps count on the visible part; cell positions stay the real ones
             drawH = b.height;
             drawn = true;
-            canvas.save();
+            boolean over = b.width > b.visible;
+            if (over) {
+                // Own layer, so the fade can erase to whatever the background is (light, dark, AMOLED).
+                canvas.saveLayer(x, oy, x + b.visible, oy + b.height, null);
+            } else {
+                canvas.save();
+            }
             canvas.translate(x, oy);
+            if (over) canvas.clipRect(0, 0, b.visible, b.height);
             for (int r = 0; r <= b.layouts.length; r++) {
                 canvas.drawRect(0, b.rowY[r], b.width, b.rowY[r] + b.bw, b.border);
             }
@@ -445,6 +458,14 @@ public final class InlineTables {
                     b.layouts[r][c].draw(canvas);
                     canvas.restore();
                 }
+            }
+            if (over) {
+                float fade = Math.min(FADE_DP * Resources.getSystem().getDisplayMetrics().density, b.visible);
+                Paint p = new Paint();
+                p.setShader(new LinearGradient(b.visible - fade, 0, b.visible, 0, 0x00000000, 0xFF000000,
+                        Shader.TileMode.CLAMP));
+                p.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.DST_OUT));
+                canvas.drawRect(b.visible - fade, 0, b.visible, b.height, p);
             }
             canvas.restore();
         }
@@ -473,21 +494,23 @@ public final class InlineTables {
             int padX = Math.round(5 * d);
             int padY = Math.round(3 * d);
             int[] natural = new int[columns];
-            int[] min = new int[columns];
+            int[] whole = new int[columns]; // longest whole word
+            int[] once = new int[columns]; // longest word broken at most once
             for (List<CellData> row : rows) {
                 for (int c = 0; c < columns; c++) {
                     CharSequence t = row.get(c).text;
                     natural[c] = Math.max(natural[c], (int) Math.ceil(Layout.getDesiredWidth(t, 0, t.length(), tp)));
-                    min[c] = Math.max(min[c], longestWord(t, tp));
+                    whole[c] = Math.max(whole[c], wordWidth(t, tp, false));
+                    once[c] = Math.max(once[c], wordWidth(t, tp, true));
                 }
             }
             for (int c = 0; c < columns; c++) {
                 natural[c] += 2 * padX;
-                min[c] += 2 * padX;
+                whole[c] += 2 * padX;
+                once[c] += 2 * padX;
             }
             int target = avail - (columns + 1) * bw;
-            int floor = 2 * padX + Math.round(size * 1.5f);
-            int[] widths = TableModel.columnWidths(natural, min, target, floor);
+            int[] widths = TableModel.columnWidths(natural, whole, once, target);
 
             int[] colX = new int[columns + 1];
             for (int c = 0; c < columns; c++) colX[c + 1] = colX[c] + bw + widths[c];
@@ -509,7 +532,10 @@ public final class InlineTables {
             }
             Paint border = new Paint();
             border.setColor(Color.argb(0x66, Color.red(color), Color.green(color), Color.blue(color)));
-            built = new Built(width, rowY[rows.size()] + bw, colX, rowY, layouts, bw, padX, padY, border);
+            // Wider than the comment: report (and show) only the available width, so rif's own
+            // layout isn't disturbed; the rest runs off the right edge, faded out.
+            built = new Built(width, Math.min(width, avail), rowY[rows.size()] + bw, colX, rowY, layouts, bw,
+                    padX, padY, border);
             builtAvail = avail;
             builtSize = size;
             builtColor = color;
@@ -518,25 +544,38 @@ public final class InlineTables {
             return built;
         }
 
-        private static int longestWord(CharSequence t, TextPaint tp) {
-            int longest = 0;
+        /**
+         * The widest word of [t]: whole, or with [once] its word minimum
+         * ({@link TableModel#wordMinimum}: broken at most once). Words split on whitespace only.
+         * Measured with [tp] over the cell's own spans, so bold and the like count.
+         */
+        private static int wordWidth(CharSequence t, TextPaint tp, boolean once) {
+            int widest = 0;
             int i = 0;
             int n = t.length();
             while (i < n) {
                 while (i < n && Character.isWhitespace(t.charAt(i))) i++;
                 int from = i;
                 while (i < n && !Character.isWhitespace(t.charAt(i))) i++;
-                if (i > from) {
-                    longest = Math.max(longest, (int) Math.ceil(Layout.getDesiredWidth(t, from, i, tp)));
+                if (i == from) continue;
+                int whole = (int) Math.ceil(Layout.getDesiredWidth(t, from, i, tp));
+                int mid = once ? TableModel.splitPoint(t, from, i) : -1;
+                int word = whole;
+                if (mid >= 0) {
+                    word = TableModel.wordMinimum(Character.codePointCount(t, from, i), whole,
+                            (int) Math.ceil(Layout.getDesiredWidth(t, from, mid, tp)),
+                            (int) Math.ceil(Layout.getDesiredWidth(t, mid, i, tp)));
                 }
+                widest = Math.max(widest, word);
             }
-            return longest;
+            return widest;
         }
     }
 
     /** A table laid out for one width and text style. Row i spans rowY[i]..rowY[i+1]. */
     private static final class Built {
-        final int width;
+        final int width; // the table's real width; may exceed the available width
+        final int visible; // min(width, available): what's reported to the layout and shown
         final int height;
         final int[] colX;
         final int[] rowY;
@@ -546,9 +585,10 @@ public final class InlineTables {
         final int padY;
         final Paint border;
 
-        Built(int width, int height, int[] colX, int[] rowY, StaticLayout[][] layouts, int bw, int padX,
-              int padY, Paint border) {
+        Built(int width, int visible, int height, int[] colX, int[] rowY, StaticLayout[][] layouts, int bw,
+              int padX, int padY, Paint border) {
             this.width = width;
+            this.visible = visible;
             this.height = height;
             this.colX = colX;
             this.rowY = rowY;

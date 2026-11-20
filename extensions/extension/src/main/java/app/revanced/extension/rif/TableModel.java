@@ -275,72 +275,80 @@ final class TableModel {
         return p;
     }
 
+    /** Words with fewer characters than this are never broken. */
+    static final int WHOLE_WORD_CHARS = 6;
+    /** Extra px on a long word's column minimum, so rounding can't push its second half to a third line. */
+    static final int WORD_SLACK = 2;
+
     /**
-     * Column widths for [target] px (the available width minus borders). [natural]: each
-     * column's width on one line; [min]: its longest word. Fits as is when it can; else shrinks
-     * the columns' extra width (natural - min) in proportion, keeping every word whole; if even
-     * the words don't fit, columns with short words keep them whole and the long-word columns
-     * share the rest equally, down to [floor] (so a word breaks only when it can't fit). With many columns the floors can still exceed [target].
+     * Where a word of [t] from [from] to [to] may break to keep a column narrow: the offset after
+     * the first ceil(n/2) characters (code points, so a surrogate pair stays whole), or -1 if the
+     * word is short ({@link #WHOLE_WORD_CHARS}) and stays whole.
      */
-    static int[] columnWidths(int[] natural, int[] min, int target, int floor) {
+    static int splitPoint(CharSequence t, int from, int to) {
+        int chars = Character.codePointCount(t, from, to);
+        if (chars < WHOLE_WORD_CHARS) return -1;
+        return Character.offsetByCodePoints(t, from, (chars + 1) / 2);
+    }
+
+    /**
+     * The least width a word needs: its whole width if it has fewer than {@link #WHOLE_WORD_CHARS}
+     * characters, else the wider of its two halves' widths (split at {@link #splitPoint}) plus
+     * {@link #WORD_SLACK}, so it wraps at most once.
+     */
+    static int wordMinimum(int chars, int whole, int firstHalf, int secondHalf) {
+        if (chars < WHOLE_WORD_CHARS) return whole;
+        return Math.min(whole, Math.max(firstHalf, secondHalf) + WORD_SLACK);
+    }
+
+    /**
+     * Column widths for [target] px (the available width minus borders), in this order:
+     * (a) [natural] (each column's width on one line) if they fit; (b) else shrunk towards
+     * [whole] (each column's longest whole word plus padding) if those fit, so no word breaks;
+     * (c) else shrunk further towards [once] (the wrap-at-most-once minimum, see
+     * {@link #wordMinimum}); (d) if even those exceed [target], exactly [once]: the table is wider
+     * than [target] and the caller lets it run off the edge. Shrinking takes each column's slack
+     * in proportion, and never goes below the level it's shrinking towards.
+     */
+    static int[] columnWidths(int[] natural, int[] whole, int[] once, int target) {
         int n = natural.length;
-        int[] nat = natural.clone();
-        int[] mn = new int[n];
+        int[] nat = new int[n];
+        int[] wh = new int[n];
+        int[] on = new int[n];
         long sumNat = 0;
-        long sumMin = 0;
+        long sumWhole = 0;
+        long sumOnce = 0;
         for (int i = 0; i < n; i++) {
-            mn[i] = Math.max(1, Math.min(min[i], nat[i]));
-            nat[i] = Math.max(nat[i], mn[i]);
+            on[i] = Math.max(1, Math.min(once[i], Math.min(whole[i], natural[i])));
+            wh[i] = Math.max(on[i], Math.min(whole[i], natural[i]));
+            nat[i] = Math.max(wh[i], natural[i]);
             sumNat += nat[i];
-            sumMin += mn[i];
+            sumWhole += wh[i];
+            sumOnce += on[i];
         }
         if (sumNat <= target) return nat;
+        if (sumWhole <= target) return shrink(nat, wh, sumNat, sumWhole, target);
+        if (sumOnce >= target) return on;
+        return shrink(wh, on, sumWhole, sumOnce, target);
+    }
+
+    /** From [hi] (sum [sumHi] > [target]) towards [lo] (sum [sumLo] <= target), proportionally to hi - lo. */
+    private static int[] shrink(int[] hi, int[] lo, long sumHi, long sumLo, int target) {
+        int n = hi.length;
+        long extra = target - sumLo;
+        long gap = sumHi - sumLo; // > 0
         int[] w = new int[n];
-        if (sumMin <= target) {
-            long extra = target - sumMin;
-            long gap = sumNat - sumMin; // > 0: sumNat > target >= sumMin
-            long used = 0;
-            for (int i = 0; i < n; i++) {
-                w[i] = mn[i] + (int) (extra * (nat[i] - mn[i]) / gap);
-                used += w[i];
-            }
-            for (int i = 0; i < n && used < target; i++) { // rounding left a few px
-                if (w[i] < nat[i]) {
-                    w[i]++;
-                    used++;
-                }
-            }
-            return w;
+        long used = 0;
+        for (int i = 0; i < n; i++) {
+            w[i] = lo[i] + (int) (extra * (hi[i] - lo[i]) / gap);
+            used += w[i];
         }
-        // Words don't all fit. Columns whose longest word fits in an equal share of what's left
-        // keep their words whole (repeat as the share grows); only the columns with longer words
-        // split the rest equally, so short-word columns never break letter by letter.
-        boolean[] fixed = new boolean[n];
-        long remaining = target;
-        int open = n;
-        boolean changed = true;
-        while (changed && open > 0) {
-            changed = false;
-            long share = remaining / open;
-            for (int i = 0; i < n; i++) {
-                if (!fixed[i] && mn[i] <= share) {
-                    fixed[i] = true;
-                    w[i] = mn[i];
-                    remaining -= mn[i];
-                    open--;
-                    changed = true;
-                }
+        for (int i = 0; i < n && used < target; i++) { // rounding left a few px
+            if (w[i] < hi[i]) {
+                w[i]++;
+                used++;
             }
         }
-        if (open > 0) {
-            long share = remaining / open;
-            long rest = remaining - share * open;
-            for (int i = 0; i < n; i++) {
-                if (fixed[i]) continue;
-                w[i] = (int) Math.max(Math.min(floor, mn[i]), share + (rest-- > 0 ? 1 : 0));
-            }
-        }
-        for (int i = 0; i < n; i++) if (w[i] <= 0) w[i] = Math.min(floor, mn[i]);
         return w;
     }
 }
