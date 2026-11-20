@@ -22,7 +22,7 @@ private const val EXTENSION = "Lapp/revanced/extension/rif/InlineImages;"
 private const val TABLES_EXTENSION = "Lapp/revanced/extension/rif/InlineTables;"
 private const val STEP_SEEK_BAR = "Lapp/revanced/extension/rif/StepSeekBarPreference;"
 
-// Adds the "Inline media" category to the ReVanced screen. The other checkboxes
+// Adds the "Inline media" category to the rif patches screen. The other checkboxes
 // are greyed out when "Inline images" is off.
 val inlineImagesSettingsResourcePatch = resourcePatch(
     description = "Adds the Inline comment images settings.",

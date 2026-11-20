@@ -69,7 +69,7 @@ internal val albumAdAdapterFactoryFingerprint = fingerprint {
     }
 }
 
-// Adds the "Disable ads" category (Block ads checkbox) to the ReVanced screen.
+// Adds the "Disable ads" category (Block ads checkbox) to the rif patches screen.
 val disableAdsSettingsResourcePatch = resourcePatch(
     description = "Adds the Disable ads settings.",
 ) {

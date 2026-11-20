@@ -1,6 +1,6 @@
 # Patch details
 
-How each patch works, and its settings (under **Settings → ReVanced** in the patched app). For a summary, see the [README](README.md).
+How each patch works, and its settings (under **Settings → rif patches** in the patched app). For a summary, see the [README](README.md).
 
 All patches target **rif is fun 5.6.22**. rif is R8-obfuscated, and the free (`com.andrewshu.android.reddit`) and golden platinum (`com.andrewshu.android.redditdonation`) builds are obfuscated independently: same code, different class and member names. Patches find their targets by shape (signatures, strings, call patterns) or through the per-build symbol table `RIF_BUILDS` in `patches/src/main/kotlin/app/revanced/patches/rif/shared/Rif.kt`.
 
@@ -138,7 +138,7 @@ How it works: a hook in rif's body renderer, after the body's HTML becomes style
 
 Adds a setting to hide distinguished (mod and admin) comments from blocked users.
 
-rif already hides a blocked user's comments, but not a distinguished one such as a moderator bot's pinned comment. With **Hide blocked users' mod comments** on (Settings → ReVanced → Blocked users; off by default), those comments disappear too, together with the replies under them, like rif's own blocked-user filter. A comment opened on its own (its permalink) and comments in subreddits you moderate still show.
+rif already hides a blocked user's comments, but not a distinguished one such as a moderator bot's pinned comment. With **Hide blocked users' mod comments** on (Settings → rif patches → Blocked users; off by default), those comments disappear too, together with the replies under them, like rif's own blocked-user filter. A comment opened on its own (its permalink) and comments in subreddits you moderate still show.
 
 How it works: Reddit does not mark a blocked mod's comment as a blocked author's; it sends `unrepliable_reason: NEAR_BLOCKED` instead. A hook in rif's blocked-comment filter asks the extension first, passing that flag and the `distinguished` value. When the setting is on and both apply, rif goes straight to its own permalink and moderator checks.
 

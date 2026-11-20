@@ -2,7 +2,7 @@
 
 [ReVanced](https://revanced.app) patch bundle for **rif is fun for Reddit** 5.6.22 — both the free app (`com.andrewshu.android.reddit`) and **rif is fun golden platinum** (`com.andrewshu.android.redditdonation`).
 
-This bundle contains many small, independently-toggleable patches. Options for each patch are under **Settings → ReVanced** in the patched app.
+This bundle contains many small, independently-toggleable patches. Options for each patch are under **Settings → rif patches** in the patched app.
 
 The Morphe port of these patches can be found [here](https://github.com/MojiRS/morphe-rif-patches).
 

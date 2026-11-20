@@ -4,9 +4,9 @@ import android.content.Context;
 import android.content.SharedPreferences;
 
 /**
- * Reads the ReVanced settings the patches expose in rif's settings UI.
+ * Reads the settings the patches expose in rif's settings UI.
  *
- * The checkboxes live in a "ReVanced" preference screen that inherits rif's base
+ * The checkboxes live in a "rif patches" preference screen that inherits rif's base
  * settings fragment, so they write booleans to rif's "settings" SharedPreferences
  * file. The app Context comes from a hook in rif's Application.onCreate
  * ({@link #init}); reads are safe from any thread (e.g. the comment-render worker).
