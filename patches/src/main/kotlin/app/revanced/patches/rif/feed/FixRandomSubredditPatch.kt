@@ -19,13 +19,14 @@ private const val URI = "Landroid/net/Uri;"
 // i3.c.H): runs on a worker thread for every Reddit request (also for the listing loader
 // h3.a$a, whose override calls super) and reads the request URI from the base's `Uri` field
 // at every use. The class is the one the `Y(Response, ...)` error handler lives in, found by
-// its "com.reddit" const-string (see requestErrorFingerprint).
+// its shape and "com.reddit" const-string (see requestErrorFingerprint). Not by name: other
+// bundles that hook the handler rename it (Patcheddit 2.5.0: `morpheOriginal_Y_0`).
 internal val requestBackgroundFingerprint = fingerprint {
     returns("Ljava/lang/Object;")
     parameters("[Ljava/lang/Void;")
     custom { method, classDef ->
         !AccessFlags.SYNTHETIC.isSet(method.accessFlags) && !AccessFlags.BRIDGE.isSet(method.accessFlags) &&
-            classDef.methods.any { it.name == "Y" && it.parameterTypes.size == 4 && it.hasConst("com.reddit") }
+            classDef.methods.any { it.parameterTypes.size == 4 && it.hasConst("com.reddit") }
     }
 }
 
