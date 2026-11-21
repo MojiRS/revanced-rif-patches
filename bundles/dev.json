@@ -1,7 +1,7 @@
 {
-  "created_at": "2026-11-21T00:40:24",
-  "description": "Test build, not a release. For stable builds use main/bundles/stable.json.\n\nFix random subreddit works alongside Patcheddit 2.5.0.\n\nIncludes everything from dev4.\n",
-  "download_url": "https://raw.githubusercontent.com/MojiRS/revanced-rif-patches/test-builds/patches-1.10.0-dev5.rvp",
+  "created_at": "2026-11-21T16:54:36",
+  "description": "Test build, not a release. For stable builds use main/bundles/stable.json.\n\nNew patch \"Explain processing videos\": a Reddit video that's still processing says so instead of \"Error retrieving reddit video metadata\" or \"Error determining video format\".\nRare fixes: no second upload when rif retries a failed post; an unrelated feed error no longer shows the Reddit-block message.\n\nIncludes everything from dev5.\n",
+  "download_url": "https://raw.githubusercontent.com/MojiRS/revanced-rif-patches/test-builds/patches-1.10.0-dev6.rvp",
   "signature_download_url": "N/A",
-  "version": "v1.10.0-dev5"
+  "version": "v1.10.0-dev6"
 }
