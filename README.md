@@ -26,6 +26,7 @@ The Morphe port of these patches can be found [here](https://github.com/MojiRS/m
 | **Post to profile**               | Adds ways to post to your profile: a My Profile button on the submit page and Submit in your profile's menu.                                   |
 | **Explain Reddit blocks**         | Shows "Reddit is temporarily blocking requests" instead of "Error: forbidden" when Reddit blocks a feed.                                       |
 | **Fix random subreddit**          | Makes Random open a random subreddit again, picked by the redditrand.com API.                                                                  |
+| **Explain processing videos**     | Says when a Reddit video is still processing instead of showing an error.                                                                      |
 
 For details on how each patch works and its settings, see [PATCHES.md](PATCHES.md).
 

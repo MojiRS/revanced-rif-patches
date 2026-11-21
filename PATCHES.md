@@ -191,3 +191,13 @@ Each tap sends one plain request to redditrand (your IP address, like any web re
 No settings.
 
 How it works: rif's request base class runs every Reddit request's background step on a worker thread and reads the request URI from one field. A hook at the top of that step lets the extension look at the URI; if it is a listing of `r/random` or `r/randnsfw` (any sort), it makes a blocking request to redditrand (10 s timeout), reads the name from `{"url":"/r/<name>/"}`, and rewrites the URI to `r/<name>` before rif builds its request. The field's `final` flag is removed so it can be replaced. rif's own random mode handles the rest, so refreshing Random picks another subreddit, as it used to.
+
+## Explain processing videos
+
+Shows "Reddit hasn't finished processing this video. Try again in a minute." when you tap a Reddit video (`v.redd.it`) that can't play yet, instead of rif's "Error retrieving reddit video metadata." or "Error determining video format." Nothing is retried; tap again later. A video posted from rif with Reddit image hosting is in this state for its first minute or so, and can stay there for a few minutes.
+
+It covers two cases. A video Reddit hasn't produced yet (the post has no video data; a video that never processes stays like this for good), and a video whose streams Reddit still refuses (HTTP 403) while the data is complete. Any other failure keeps rif's own message, and videos that play are unchanged.
+
+No settings.
+
+How it works: rif's video metadata loader parses the post JSON and returns null when the post has no video yet. A hook there keeps the first 256 KB of the response (rif gets an identical copy), and a second hook replaces the error toast in the loader's null branch: if that body is a post with `is_video` true and no `media`, it shows the message above, otherwise rif's toast. For the second case, a hook at the start of the player's error callback notes, per player, whether the DASH and HLS playlists of the v.redd.it video were answered with 403 (other failures are noted too), and a hook on the toast that ends rif's format-metadata fetch shows the message only when both were refused and nothing else failed. rif's mp4 fallback isn't used for playback (rif builds it as DASH and fails), so a refused video stays unplayable until Reddit serves it.
