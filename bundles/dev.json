@@ -1,7 +1,7 @@
 {
-  "created_at": "2026-11-22T02:20:00",
-  "description": "Test build, not a release. For stable builds use main/bundles/stable.json.\n\n1.10.0-rc1: same code as dev7/dev8 plus the 1.10.0 README. New: Fix random subreddit, Explain processing videos, inline tables. Re-patch and spot-check if you like; nothing new to test.\n",
-  "download_url": "https://raw.githubusercontent.com/MojiRS/revanced-rif-patches/test-builds/patches-1.10.0-rc1.rvp",
+  "created_at": "2026-11-22T02:33:10",
+  "description": "Test build, not a release. For stable builds use main/bundles/stable.json.\n\n1.10.0-rc2: rc1 plus Manager descriptions matching the README. Text only; nothing new to test.\n",
+  "download_url": "https://raw.githubusercontent.com/MojiRS/revanced-rif-patches/test-builds/patches-1.10.0-rc2.rvp",
   "signature_download_url": "N/A",
-  "version": "v1.10.0-rc1"
+  "version": "v1.10.0-rc2"
 }
