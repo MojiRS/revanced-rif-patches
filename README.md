@@ -2,7 +2,7 @@
 
 [ReVanced](https://revanced.app) patch bundle for **rif is fun for Reddit** 5.6.22 — both the free app (`com.andrewshu.android.reddit`) and **rif is fun golden platinum** (`com.andrewshu.android.redditdonation`).
 
-This bundle contains many small, independently-toggleable patches. Options for each patch are under **Settings → ReVanced** in the patched app.
+This bundle contains many small, independently-toggleable patches. Options for each patch are under **Settings → rif patches** in the patched app.
 
 The Morphe port of these patches can be found [here](https://github.com/MojiRS/morphe-rif-patches).
 
@@ -11,7 +11,7 @@ The Morphe port of these patches can be found [here](https://github.com/MojiRS/m
 | Patch                             | Description                                                                                                                                    |
 | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Disable ads**                   | Removes all ads. *Not needed for rif golden platinum.*                                                                                         |
-| **Inline comment images**         | Shows images, GIFs and videos linked in comments and text posts inline.                                                                        |
+| **Inline comment images**         | Shows images, GIFs, videos and tables in comments and text posts inline.                                                                       |
 | **Fix comment video links**       | Makes videos posted in comments play in rif's video player instead of failing to load.                                                         |
 | **Fix imgur albums**              | Fixes imgur albums crashing or failing to load.                                                                                                |
 | **Fix YouTube videos**            | Fixes the built-in YouTube player.                                                                                                             |
@@ -25,6 +25,8 @@ The Morphe port of these patches can be found [here](https://github.com/MojiRS/m
 | **Fix history import**            | Makes "Import settings" restore the history from backups made with "Export settings and history".                                              |
 | **Post to profile**               | Adds ways to post to your profile: a My Profile button on the submit page and Submit in your profile's menu.                                   |
 | **Explain Reddit blocks**         | Shows "Reddit is temporarily blocking requests" instead of "Error: forbidden" when Reddit blocks a feed.                                       |
+| **Fix random subreddit**          | Makes Random and r/randnsfw open random subreddits again, sourced from redditrand.com.                                                         |
+| **Explain processing videos**     | Says when a Reddit video is still processing instead of showing an error.                                                                      |
 
 For details on how each patch works and its settings, see [PATCHES.md](PATCHES.md).
 
