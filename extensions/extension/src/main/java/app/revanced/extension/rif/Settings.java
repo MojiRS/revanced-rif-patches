@@ -30,6 +30,7 @@ public final class Settings {
     public static final String KEY_YOUTUBE_CAPTIONS_VERTICAL = "YOUTUBE_CAPTIONS_VERTICAL";
     public static final String KEY_YOUTUBE_CAPTIONS_SHORTS = "YOUTUBE_CAPTIONS_SHORTS";
     public static final String KEY_HIDE_BLOCKED_DISTINGUISHED = "HIDE_BLOCKED_DISTINGUISHED";
+    public static final String KEY_RANDNSFW_SIDEBAR = "RANDNSFW_SIDEBAR";
 
     private static SharedPreferences prefs;
     private static Context appContext;
@@ -169,6 +170,11 @@ public final class Settings {
     /** Hide distinguished (mod/admin) comments from blocked users. Off unless turned on. */
     public static boolean hideBlockedDistinguished() {
         return get(KEY_HIDE_BLOCKED_DISTINGUISHED, false);
+    }
+
+    /** Show a randnsfw row below Random in the subreddit picker. Off unless turned on. */
+    public static boolean randnsfwSidebar() {
+        return get(KEY_RANDNSFW_SIDEBAR, false);
     }
 
     public static boolean longPressImageSelectsComment() {

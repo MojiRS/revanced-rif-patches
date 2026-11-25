@@ -25,7 +25,7 @@ The Morphe port of these patches can be found [here](https://github.com/MojiRS/m
 | **Fix history import**            | Makes "Import settings" restore the history from backups made with "Export settings and history".                                              |
 | **Post to profile**               | Adds ways to post to your profile: a My Profile button on the submit page and Submit in your profile's menu.                                   |
 | **Explain Reddit blocks**         | Shows "Reddit is temporarily blocking requests" instead of "Error: forbidden" when Reddit blocks a feed.                                       |
-| **Fix random subreddit**          | Makes Random and r/randnsfw open random subreddits again, sourced from redditrand.com.                                                         |
+| **Fix random subreddit**          | Makes Random and r/randnsfw open random subreddits again, sourced from redditrand.com. Optional randnsfw row in the sidebar (off by default).  |
 | **Explain processing videos**     | Says when a Reddit video is still processing instead of showing an error.                                                                      |
 
 For details on how each patch works and its settings, see [PATCHES.md](PATCHES.md).
