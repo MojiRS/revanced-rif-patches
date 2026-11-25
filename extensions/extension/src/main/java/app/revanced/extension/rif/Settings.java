@@ -177,8 +177,9 @@ public final class Settings {
         return get(KEY_RANDNSFW_SIDEBAR, false);
     }
 
+    /** Long press on an inline image or table selects its comment. Off with Inline images (its UI dependency). */
     public static boolean longPressImageSelectsComment() {
-        return get(KEY_INLINE_IMAGES_LONG_PRESS_SELECT, true);
+        return inlineImages() && get(KEY_INLINE_IMAGES_LONG_PRESS_SELECT, true);
     }
 
     /** Hold time (ms) for a long press on an inline image (a slider, 100-1000). */
