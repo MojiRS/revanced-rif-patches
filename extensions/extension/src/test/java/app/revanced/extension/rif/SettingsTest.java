@@ -16,5 +16,6 @@ public class SettingsTest {
         assertTrue(Settings.inlineImages());
         assertTrue(Settings.inlineVideos());
         assertTrue(Settings.inlineTables());
+        assertTrue(Settings.longPressImageSelectsComment());
     }
 }

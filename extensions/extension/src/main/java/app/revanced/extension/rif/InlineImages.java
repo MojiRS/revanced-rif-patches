@@ -266,7 +266,9 @@ public final class InlineImages {
     public static void embed(SpannableStringBuilder body) {
         try {
             if (body == null) return;
-            if (!Settings.inlineImages()) return; // feature disabled in settings
+            // Images and videos are separate settings: skip only when both are off (load() keeps
+            // the kinds apart). Tables are InlineTables' own, run before this.
+            if (!Settings.inlineImages() && !Settings.inlineVideos()) return;
             if (Looper.myLooper() == Looper.getMainLooper()) return; // never block UI
             long batch = InlineLoader.batch(); // for every body, so batches follow rif's renders
 
@@ -699,7 +701,11 @@ public final class InlineImages {
         // Direct image links are used as-is; other known media hosts (imgur pages, redgifs,
         // reddit galleries, ...) are resolved to their image via the page's og:image tag.
         // Anything else stays a link.
+        // With images off only a video may embed, and only an imgur album can still turn out to be
+        // one (a single mp4 item): everything else stays a plain link, without a fetch.
+        boolean images = Settings.inlineImages();
         Album album = imgurAlbum(url, network);
+        if (!images && album == null) return null;
         if (album == Album.MISSING) return Media.missing(0, 0);
         String imageUrl = album != null ? album.urls.get(0) : resolveImageUrl(url, network);
         if (imageUrl == MISSING_URL) return Media.missing(0, 0);
@@ -714,6 +720,7 @@ public final class InlineImages {
             }
             return video;
         }
+        if (!images) return null; // an image album or image: left as a link
         byte[] data = network ? fetch(imageUrl) : cached(imageUrl);
         if (data != null) return Media.image(data, imageUrl, album);
         if (!network && album != null && album.width > 0 && album.height > 0) {
@@ -1068,8 +1075,10 @@ public final class InlineImages {
     private static boolean onImage(TextView tv) {
         CharSequence text = tv.getText();
         if (!(text instanceof Spanned)) return false;
-        if (InlineTables.onTable(tv)) return true;
+        if (Settings.inlineTables() && InlineTables.onTable(tv)) return true;
         for (FitImageSpan span : ((Spanned) text).getSpans(0, text.length(), FitImageSpan.class)) {
+            // Only kinds that are switched on (a span can outlive its setting in rif's cached text).
+            if (span instanceof InlineVideos.VideoSpan ? !Settings.inlineVideos() : !Settings.inlineImages()) continue;
             if (!Float.isNaN(tapPosition(tv, span, span.width()))) return true;
         }
         return false;

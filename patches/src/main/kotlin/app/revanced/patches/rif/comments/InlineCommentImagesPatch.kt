@@ -23,8 +23,9 @@ private const val EXTENSION = "Lapp/revanced/extension/rif/InlineImages;"
 private const val TABLES_EXTENSION = "Lapp/revanced/extension/rif/InlineTables;"
 private const val STEP_SEEK_BAR = "Lapp/revanced/extension/rif/StepSeekBarPreference;"
 
-// Adds the "Inline media" category to the rif patches screen. The other checkboxes
-// are greyed out when "Inline images" is off.
+// Adds the "Inline media" category to the rif patches screen. Album navigation follows
+// "Inline images" and autoplay "Inline videos" (one dependency key each); the size settings and
+// long press depend on several, so RevancedSettingsFragment greys them live.
 val inlineImagesSettingsResourcePatch = resourcePatch(
     description = "Adds the Inline comment images settings.",
 ) {
@@ -36,17 +37,28 @@ val inlineImagesSettingsResourcePatch = resourcePatch(
             category.appendChild(doc.checkBoxPreference("INLINE_IMAGES", "Inline images"))
             category.appendChild(
                 doc.checkBoxPreference(
-                    "INLINE_IMAGES_SCALE",
-                    "Scale inline images to fit",
+                    "INLINE_ALBUM_NAVIGATION",
+                    "Inline album navigation",
                     dependency = "INLINE_IMAGES",
+                    summary = "Arrows on multi-image imgur albums to cycle images.",
                 ),
             )
+            category.appendChild(doc.checkBoxPreference("INLINE_VIDEOS", "Inline videos"))
+            category.appendChild(
+                doc.checkBoxPreference(
+                    "INLINE_VIDEOS_AUTOPLAY",
+                    "Autoplay inline videos",
+                    dependency = "INLINE_VIDEOS",
+                ),
+            )
+            // Size settings: enabled while images or videos is on (RevancedSettingsFragment
+            // greys them live; a preference has only one dependency key).
+            category.appendChild(doc.checkBoxPreference("INLINE_IMAGES_SCALE", "Scale inline media to fit"))
             for ((side, ofWhat) in listOf("WIDTH" to "width", "HEIGHT" to "height")) {
                 category.appendChild(
                     doc.checkBoxPreference(
                         "INLINE_IMAGES_LIMIT_$side",
                         "Limit inline media $ofWhat",
-                        dependency = "INLINE_IMAGES",
                         default = false,
                     ),
                 )
@@ -62,30 +74,12 @@ val inlineImagesSettingsResourcePatch = resourcePatch(
                     ),
                 )
             }
-            category.appendChild(
-                doc.checkBoxPreference(
-                    "INLINE_ALBUM_NAVIGATION",
-                    "Inline album navigation",
-                    dependency = "INLINE_IMAGES",
-                    summary = "Arrows on multi-image imgur albums to cycle images.",
-                ),
-            )
-            category.appendChild(
-                doc.checkBoxPreference("INLINE_VIDEOS", "Inline videos", dependency = "INLINE_IMAGES"),
-            )
-            category.appendChild(
-                doc.checkBoxPreference(
-                    "INLINE_VIDEOS_AUTOPLAY",
-                    "Autoplay inline videos",
-                    dependency = "INLINE_VIDEOS",
-                ),
-            )
             category.appendChild(doc.checkBoxPreference("INLINE_TABLES", "Inline tables"))
+            // Enabled while images, videos or tables is on (RevancedSettingsFragment).
             category.appendChild(
                 doc.checkBoxPreference(
                     "INLINE_IMAGES_LONG_PRESS_SELECT",
-                    "Long press image to select comment",
-                    dependency = "INLINE_IMAGES",
+                    "Long press media to select comment",
                 ),
             )
             category.appendChild(

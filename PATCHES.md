@@ -23,7 +23,7 @@ Shows images, GIFs, videos and tables in comments and text posts inline.
 **Tables**
 
 - A markdown table is drawn in place of rif's "[View formatted table]" link and its plain-text cells: thin borders, bold header row, left/center/right alignment, links in cells (tap one to open it like any link). Columns share the comment's width and long text wraps. Tap the table anywhere else to open rif's zoomable popup.
-- Works with "Inline images" off. Setting: *Inline tables*.
+- Images, videos and tables are switched on and off independently. Setting: *Inline tables*.
 
 **Images**
 
@@ -31,7 +31,7 @@ Shows images, GIFs, videos and tables in comments and text posts inline.
 - Bare links, and Reddit-app `[gif]` markers, are replaced by the image. `[text](url)` links keep their text, with the image on the line below.
 - Multi-image **imgur albums** (listed through imgur's API with rif's client ID) show an "n/x" badge and ◀ ▶ buttons: tap the left or right third of the image to cycle through the album, or the middle to open it in rif's album viewer.
 - Images shrink to fit indented replies.
-- Long pressing an image selects its comment, like tapping the comment's text.
+- Long pressing an image, video or table selects its comment, like tapping the comment's text (only the kinds that are switched on).
 
 **Videos**
 
@@ -40,7 +40,7 @@ Shows images, GIFs, videos and tables in comments and text posts inline.
 - Tap a video for controls like rif's own player's, built from rif's own icons and colors: back to start, play/pause, repeat (on by default), sound, seek, and full screen. Full screen opens rif's player at the same position, repeat and sound settings.
 - The video is drawn by a `TextureView` laid over the space the text reserves for it, in the frame rif wraps comment and post bodies in. Players are released while scrolled away or while rif is hidden (e.g. the phone is locked), and restored where they were.
 
-Settings: *Inline images*, *Scale inline images to fit*, *Limit inline media width* and *Limit inline media height* (off by default), each with a *Max width (% of screen)* / *Max height (% of screen)* slider, *Inline album navigation* (off: no arrows, tapping an album opens it), *Inline videos*, *Autoplay inline videos*, *Inline tables*, *Long press image to select comment* with a *Long press delay* slider.
+Settings, in order: *Inline images*, *Inline album navigation* (off: no arrows, tapping an album opens it; needs Inline images), *Inline videos*, *Autoplay inline videos*, *Scale inline media to fit*, *Limit inline media width* and *Limit inline media height* (off by default), each with a *Max width (% of screen)* / *Max height (% of screen)* slider, *Inline tables*, *Long press media to select comment* with a *Long press delay* slider. Images, videos and tables are independent: with images off, video links still play inline and image links stay plain. The size settings are greyed out unless images or videos is on, and long press unless images, videos or tables is on (updated live, by `RevancedSettingsFragment`).
 
 How it works: images are fetched and embedded on rif's background thread, when it renders a comment or post body (before it's shown). A hook after each body `setText` then starts GIFs and adds video overlays on the main thread.
 

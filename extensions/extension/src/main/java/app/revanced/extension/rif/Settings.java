@@ -84,6 +84,11 @@ public final class Settings {
         return prefs;
     }
 
+    /** The "settings" SharedPreferences (what the settings screen writes), for the screen's change listener. */
+    static SharedPreferences sharedPreferences() {
+        return prefs();
+    }
+
     private static boolean get(String key, boolean def) {
         try {
             SharedPreferences p = prefs();
@@ -139,8 +144,9 @@ public final class Settings {
         return get(KEY_INLINE_ALBUM_NAVIGATION, true);
     }
 
+    /** Inline videos, independent of "Inline images" (like tables). Left to the other bundle in tables-only mode. */
     public static boolean inlineVideos() {
-        return inlineImages() && get(KEY_INLINE_VIDEOS, true);
+        return !inlineTablesOnly() && get(KEY_INLINE_VIDEOS, true);
     }
 
     /** Markdown tables drawn inline (on by default; independent of "Inline images"). */
@@ -177,9 +183,9 @@ public final class Settings {
         return get(KEY_RANDNSFW_SIDEBAR, false);
     }
 
-    /** Long press on an inline image or table selects its comment. Off with Inline images (its UI dependency). */
+    /** Long press on an inline image, video or table selects its comment. Off when all three are off (its UI dependency). */
     public static boolean longPressImageSelectsComment() {
-        return inlineImages() && get(KEY_INLINE_IMAGES_LONG_PRESS_SELECT, true);
+        return (inlineImages() || inlineVideos() || inlineTables()) && get(KEY_INLINE_IMAGES_LONG_PRESS_SELECT, true);
     }
 
     /** Hold time (ms) for a long press on an inline image (a slider, 100-1000). */
