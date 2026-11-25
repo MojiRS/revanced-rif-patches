@@ -1,7 +1,7 @@
 {
-  "created_at": "2026-11-25T02:18:03",
-  "description": "Test build, not a release. For stable builds use main/bundles/stable.json.\n\n- \"Long press image to select comment\" now only works while \"Inline images\" is on. With it off, a long press on an inline table selects text as usual.\n",
-  "download_url": "https://raw.githubusercontent.com/MojiRS/revanced-rif-patches/test-builds/patches-1.10.1-dev3.rvp",
+  "created_at": "2026-11-25T03:12:30",
+  "description": "Test build, not a release. For stable builds use main/bundles/stable.json.\n\n- Inline images, Inline videos and Inline tables now switch on and off independently.\n- \"Long press media to select comment\" works on images, videos and tables, and is available while any of them is on.\n- Size settings (Scale to fit, Limit width/height) apply to images and videos and now sit below the video settings.\n",
+  "download_url": "https://raw.githubusercontent.com/MojiRS/revanced-rif-patches/test-builds/patches-1.10.1-dev4.rvp",
   "signature_download_url": "N/A",
-  "version": "v1.10.1-dev3"
+  "version": "v1.10.1-dev4"
 }
