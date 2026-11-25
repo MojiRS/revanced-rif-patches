@@ -161,7 +161,6 @@ val fixRandomSubredditSettingsResourcePatch = resourcePatch(
                 doc.checkBoxPreference(
                     "RANDNSFW_SIDEBAR",
                     "Show randnsfw in sidebar",
-                    summary = "Adds a random NSFW subreddit row below Random",
                     default = false,
                 ),
             )

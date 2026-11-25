@@ -68,16 +68,13 @@ public class RandomSubredditTest {
     }
 
     @Test
-    public void rowGoesBeforeModWhenRandomIsHidden() {
+    public void rowIsHiddenWhenRandomIsHidden() {
         List<Integer> list = ids(0, 1, 2, 4);
         RandomSubreddit.insertPickerRow(list);
-        assertEquals(ids(0, 1, 2, 5, 4), list);
-        List<Integer> noMod = ids(0, 1, 2);
-        RandomSubreddit.insertPickerRow(noMod);
-        assertEquals(ids(0, 1, 2, 5), noMod);
+        assertEquals(ids(0, 1, 2, 4), list);
         List<Integer> empty = ids();
         RandomSubreddit.insertPickerRow(empty);
-        assertEquals(ids(5), empty);
+        assertEquals(ids(), empty);
     }
 
     @Test

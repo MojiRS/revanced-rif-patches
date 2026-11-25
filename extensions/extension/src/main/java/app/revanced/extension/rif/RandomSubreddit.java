@@ -71,9 +71,8 @@ public final class RandomSubreddit {
         }
     }
 
-    /** The picker adapter's row ids: 3 is rif's Random row, 4 is Mod. 5 is ours (randnsfw). */
+    /** The picker adapter's row ids: 3 is rif's Random row. 5 is ours (randnsfw). */
     static final int ID_RANDOM = 3;
-    static final int ID_MOD = 4;
     static final int ID_RANDNSFW = 5;
     static final String RANDNSFW_LABEL = "randnsfw";
 
@@ -91,19 +90,13 @@ public final class RandomSubreddit {
     }
 
     /**
-     * Puts our row id right after rif's Random row, or, if rif's Random is hidden, where it would
-     * be: before Mod, else at the end. Does nothing if the row is already there.
+     * Puts our row id right after rif's Random row. If the user hid Random (the picker's own
+     * "Show random" switch), randnsfw stays hidden too. Does nothing if the row is already there.
      */
     static void insertPickerRow(List<Integer> ids) {
         if (ids.contains(ID_RANDNSFW)) return;
         int at = ids.indexOf(ID_RANDOM);
-        if (at >= 0) {
-            at++;
-        } else {
-            at = ids.indexOf(ID_MOD);
-            if (at < 0) at = ids.size();
-        }
-        ids.add(at, ID_RANDNSFW);
+        if (at >= 0) ids.add(at + 1, ID_RANDNSFW);
     }
 
     /**
