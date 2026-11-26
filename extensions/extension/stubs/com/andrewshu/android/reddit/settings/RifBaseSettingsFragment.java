@@ -18,13 +18,17 @@ import androidx.preference.Preference;
  *   - L4(key) / A4(key): findPreference(key), throwing NullPointerException when absent
  *     (free / Golden Platinum).
  *
- * The jar also holds the androidx Preference and SeekBarPreference stubs (stubs/androidx/preference/)
- * and the androidx Pair stub (stubs/androidx/core/util/c.java, used by ImageHosting).
+ * The jar also holds the androidx Preference, TwoStatePreference, PreferenceFragmentCompat (`i`)
+ * and SeekBarPreference stubs (stubs/androidx/preference/), the androidx Pair stub
+ * (stubs/androidx/core/util/c.java, used by ImageHosting) and free's settings-search result
+ * stub (stubs/r4/c.java, used by AdSettings).
  * Rebuild it after editing any of them (from extensions/extension/, JDK 17):
  *   javac --release 17 -cp "$ANDROID_HOME/platforms/android-34/android.jar" -d stubs-out \
  *       stubs/com/andrewshu/android/reddit/settings/RifBaseSettingsFragment.java \
- *       stubs/androidx/preference/Preference.java \
- *       stubs/androidx/preference/SeekBarPreference.java stubs/androidx/core/util/c.java
+ *       stubs/androidx/preference/Preference.java stubs/androidx/preference/TwoStatePreference.java \
+ *       stubs/androidx/preference/i.java \
+ *       stubs/androidx/preference/SeekBarPreference.java stubs/androidx/core/util/c.java \
+ *       stubs/r4/c.java
  *   jar cf libs/rif-stubs.jar -C stubs-out .
  */
 public abstract class RifBaseSettingsFragment {
