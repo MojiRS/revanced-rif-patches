@@ -101,8 +101,9 @@ val revancedSettingsPatch = bytecodePatch(
 }
 
 /**
- * Appends a titled `<PreferenceCategory>` (a subheader + its preferences) to the
- * shared rif patches settings screen. Call from a feature patch's resource patch
+ * Adds a titled `<PreferenceCategory>` (a subheader + its preferences) to the
+ * shared rif patches settings screen, keeping categories in alphabetical order by title
+ * (patch order isn't fixed, so each insert finds its own place). Call from a feature patch's resource patch
  * that depends on [revancedSettingsResourcePatch].
  */
 internal fun ResourcePatchContext.addRevancedPreferenceCategory(
@@ -113,7 +114,19 @@ internal fun ResourcePatchContext.addRevancedPreferenceCategory(
         val category = doc.createElement("PreferenceCategory")
         category.setAttribute("app:title", title)
         buildPreferences(doc, category)
-        doc.documentElement.appendChild(category)
+        val root = doc.documentElement
+        val children = root.childNodes
+        var before: org.w3c.dom.Node? = null
+        for (i in 0 until children.length) {
+            val node = children.item(i)
+            if (node is Element && node.tagName == "PreferenceCategory" &&
+                node.getAttribute("app:title").compareTo(title, ignoreCase = true) > 0
+            ) {
+                before = node
+                break
+            }
+        }
+        root.insertBefore(category, before)
     }
 }
 

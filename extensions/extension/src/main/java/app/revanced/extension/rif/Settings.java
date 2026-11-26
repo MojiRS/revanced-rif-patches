@@ -30,6 +30,7 @@ public final class Settings {
     public static final String KEY_YOUTUBE_CAPTIONS_VERTICAL = "YOUTUBE_CAPTIONS_VERTICAL";
     public static final String KEY_YOUTUBE_CAPTIONS_SHORTS = "YOUTUBE_CAPTIONS_SHORTS";
     public static final String KEY_HIDE_BLOCKED_DISTINGUISHED = "HIDE_BLOCKED_DISTINGUISHED";
+    public static final String KEY_RANDNSFW_SIDEBAR = "RANDNSFW_SIDEBAR";
 
     private static SharedPreferences prefs;
     private static Context appContext;
@@ -81,6 +82,11 @@ public final class Settings {
             }
         }
         return prefs;
+    }
+
+    /** The "settings" SharedPreferences (what the settings screen writes), for the screen's change listener. */
+    static SharedPreferences sharedPreferences() {
+        return prefs();
     }
 
     private static boolean get(String key, boolean def) {
@@ -138,8 +144,9 @@ public final class Settings {
         return get(KEY_INLINE_ALBUM_NAVIGATION, true);
     }
 
+    /** Inline videos, independent of "Inline images" (like tables). Left to the other bundle in tables-only mode. */
     public static boolean inlineVideos() {
-        return inlineImages() && get(KEY_INLINE_VIDEOS, true);
+        return !inlineTablesOnly() && get(KEY_INLINE_VIDEOS, true);
     }
 
     /** Markdown tables drawn inline (on by default; independent of "Inline images"). */
@@ -171,8 +178,14 @@ public final class Settings {
         return get(KEY_HIDE_BLOCKED_DISTINGUISHED, false);
     }
 
+    /** Show a randnsfw row below Random in the subreddit picker. Off unless turned on. */
+    public static boolean randnsfwSidebar() {
+        return get(KEY_RANDNSFW_SIDEBAR, false);
+    }
+
+    /** Long press on an inline image, video or table selects its comment. Off when all three are off (its UI dependency). */
     public static boolean longPressImageSelectsComment() {
-        return get(KEY_INLINE_IMAGES_LONG_PRESS_SELECT, true);
+        return (inlineImages() || inlineVideos() || inlineTables()) && get(KEY_INLINE_IMAGES_LONG_PRESS_SELECT, true);
     }
 
     /** Hold time (ms) for a long press on an inline image (a slider, 100-1000). */

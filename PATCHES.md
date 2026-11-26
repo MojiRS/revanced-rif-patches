@@ -23,7 +23,7 @@ Shows images, GIFs, videos and tables in comments and text posts inline.
 **Tables**
 
 - A markdown table is drawn in place of rif's "[View formatted table]" link and its plain-text cells: thin borders, bold header row, left/center/right alignment, links in cells (tap one to open it like any link). Columns share the comment's width and long text wraps. Tap the table anywhere else to open rif's zoomable popup.
-- Works with "Inline images" off. Setting: *Inline tables*.
+- Images, videos and tables are switched on and off independently. Setting: *Inline tables*.
 
 **Images**
 
@@ -31,7 +31,7 @@ Shows images, GIFs, videos and tables in comments and text posts inline.
 - Bare links, and Reddit-app `[gif]` markers, are replaced by the image. `[text](url)` links keep their text, with the image on the line below.
 - Multi-image **imgur albums** (listed through imgur's API with rif's client ID) show an "n/x" badge and ◀ ▶ buttons: tap the left or right third of the image to cycle through the album, or the middle to open it in rif's album viewer.
 - Images shrink to fit indented replies.
-- Long pressing an image selects its comment, like tapping the comment's text.
+- Long pressing an image, video or table selects its comment, like tapping the comment's text (only the kinds that are switched on).
 
 **Videos**
 
@@ -40,7 +40,7 @@ Shows images, GIFs, videos and tables in comments and text posts inline.
 - Tap a video for controls like rif's own player's, built from rif's own icons and colors: back to start, play/pause, repeat (on by default), sound, seek, and full screen. Full screen opens rif's player at the same position, repeat and sound settings.
 - The video is drawn by a `TextureView` laid over the space the text reserves for it, in the frame rif wraps comment and post bodies in. Players are released while scrolled away or while rif is hidden (e.g. the phone is locked), and restored where they were.
 
-Settings: *Inline images*, *Scale inline images to fit*, *Limit inline media width* and *Limit inline media height* (off by default), each with a *Max width (% of screen)* / *Max height (% of screen)* slider, *Inline album navigation* (off: no arrows, tapping an album opens it), *Inline videos*, *Autoplay inline videos*, *Inline tables*, *Long press image to select comment* with a *Long press delay* slider.
+Settings, in order: *Inline images*, *Inline album navigation* (off: no arrows, tapping an album opens it; needs Inline images), *Inline videos*, *Autoplay inline videos*, *Scale inline media to fit*, *Limit inline media width* and *Limit inline media height* (off by default), each with a *Max width (% of screen)* / *Max height (% of screen)* slider, *Inline tables*, *Long press media to select comment* with a *Long press delay* slider. Images, videos and tables are independent: with images off, video links still play inline and image links stay plain. The size settings are greyed out unless images or videos is on, and long press unless images, videos or tables is on (updated live, by `RevancedSettingsFragment`).
 
 How it works: images are fetched and embedded on rif's background thread, when it renders a comment or post body (before it's shown). A hook after each body `setText` then starts GIFs and adds video overlays on the main thread.
 
@@ -186,11 +186,11 @@ How it works: rif's listing loader reads the body of a 403 as JSON, to learn the
 
 Makes rif's Random button (the sidebar's subreddit picker) open a random subreddit again. Reddit removed `/r/random` and `/r/randnsfw`, so rif showed "Banned subreddit". The patch asks the redditrand.com API (`api.redditrand.com`, an unofficial third-party service) for a random subreddit and opens that; rif then titles the feed and loads the subreddit as it did when Reddit still redirected.
 
-Each tap sends one plain request to redditrand (your IP address, like any web request; no Reddit token, account or cookies). If redditrand is down or its reply can't be read, nothing is replaced and rif shows its usual "Banned subreddit" error. There is no retry. Links to `/r/randnsfw` use redditrand's NSFW pick; there is no NSFW row in the picker.
+Each tap sends one plain request to redditrand (your IP address, like any web request; no Reddit token, account or cookies). If redditrand is down or its reply can't be read, nothing is replaced and rif shows its usual "Banned subreddit" error. There is no retry. Links to `/r/randnsfw` use redditrand's NSFW pick.
 
-No settings.
+Setting: **Show randnsfw in sidebar** (Settings → rif patches → Random subreddit; off by default) adds a `randnsfw` row to the subreddit picker, right below Random. It hides along with Random when you switch Random off in the picker's own settings. It opens a random NSFW subreddit the same way. It shows whatever rif's over-18 setting says; a change shows the next time the picker refreshes.
 
-How it works: rif's request base class runs every Reddit request's background step on a worker thread and reads the request URI from one field. A hook at the top of that step lets the extension look at the URI; if it is a listing of `r/random` or `r/randnsfw` (any sort), it makes a blocking request to redditrand (10 s timeout), reads the name from `{"url":"/r/<name>/"}`, and rewrites the URI to `r/<name>` before rif builds its request. The field's `final` flag is removed so it can be replaced. rif's own random mode handles the rest, so refreshing Random picks another subreddit, as it used to.
+How it works: rif's request base class runs every Reddit request's background step on a worker thread and reads the request URI from one field. A hook at the top of that step lets the extension look at the URI; if it is a listing of `r/random` or `r/randnsfw` (any sort), it makes a blocking request to redditrand (10 s timeout), reads the name from `{"url":"/r/<name>/"}`, and rewrites the URI to `r/<name>` before rif builds its request. The field's `final` flag is removed so it can be replaced. rif's own random mode handles the rest, so refreshing Random picks another subreddit, as it used to. For the row, two hooks in the picker's adapter (found by their shape: the row-id list refill and the label setter): the first adds row id 5 to the list when the setting is on, the second gives id 5 the label `randnsfw`. rif opens `/r/<row text>` on a tap, so the request hook above does the rest.
 
 ## Explain processing videos
 

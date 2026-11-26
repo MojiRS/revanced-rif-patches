@@ -3,6 +3,10 @@ package app.revanced.extension.rif;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+
 import org.junit.Test;
 
 public class RandomSubredditTest {
@@ -47,6 +51,53 @@ public class RandomSubredditTest {
         assertEquals("woahdude", RandomSubreddit.parseName("{\"url\":\"/r/woahdude/\"}"));
         assertEquals("30rock", RandomSubreddit.parseName("{ \"url\" : \"\\/r\\/30rock\\/\" }"));
         assertEquals("a_b", RandomSubreddit.parseName("{\"url\":\"/r/a_b\"}"));
+    }
+
+    private static List<Integer> ids(Integer... ids) {
+        return new ArrayList<>(Arrays.asList(ids));
+    }
+
+    @Test
+    public void rowGoesBelowRandom() {
+        List<Integer> all = ids(0, 1, 2, 3, 4);
+        RandomSubreddit.insertPickerRow(all);
+        assertEquals(ids(0, 1, 2, 3, 5, 4), all);
+        List<Integer> noMod = ids(1, 2, 3);
+        RandomSubreddit.insertPickerRow(noMod);
+        assertEquals(ids(1, 2, 3, 5), noMod);
+    }
+
+    @Test
+    public void rowIsHiddenWhenRandomIsHidden() {
+        List<Integer> list = ids(0, 1, 2, 4);
+        RandomSubreddit.insertPickerRow(list);
+        assertEquals(ids(0, 1, 2, 4), list);
+        List<Integer> empty = ids();
+        RandomSubreddit.insertPickerRow(empty);
+        assertEquals(ids(), empty);
+    }
+
+    @Test
+    public void rowIsAddedOnce() {
+        List<Integer> list = ids(2, 3, 5, 4);
+        RandomSubreddit.insertPickerRow(list);
+        assertEquals(ids(2, 3, 5, 4), list);
+    }
+
+    @Test
+    public void labelsOnlyOurRow() {
+        assertEquals("randnsfw", RandomSubreddit.pickerLabel(null, 5));
+        assertEquals("random", RandomSubreddit.pickerLabel("random", 3));
+        assertEquals("mod", RandomSubreddit.pickerLabel("mod", 4));
+        assertNull(RandomSubreddit.pickerLabel(null, 6));
+    }
+
+    @Test
+    public void rowIsOffByDefault() {
+        // No app Context on the JVM, so the setting reads its default.
+        ArrayList<Integer> list = new ArrayList<>(Arrays.asList(0, 1, 2, 3, 4));
+        RandomSubreddit.addPickerRow(list);
+        assertEquals(ids(0, 1, 2, 3, 4), list);
     }
 
     @Test

@@ -9,6 +9,8 @@ import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -67,6 +69,42 @@ public final class RandomSubreddit {
             Log.w(TAG, "resolve failed", t);
             return uri;
         }
+    }
+
+    /** The picker adapter's row ids: 3 is rif's Random row. 5 is ours (randnsfw). */
+    static final int ID_RANDOM = 3;
+    static final int ID_RANDNSFW = 5;
+    static final String RANDNSFW_LABEL = "randnsfw";
+
+    /**
+     * Called at the end of the subreddit picker adapter's `r()`, which refills its list of row ids
+     * (just before it notifies the RecyclerView). With "Show randnsfw in sidebar" on, adds our row.
+     * Never throws.
+     */
+    public static void addPickerRow(ArrayList<Integer> ids) {
+        try {
+            if (ids != null && Settings.randnsfwSidebar()) insertPickerRow(ids);
+        } catch (Throwable t) {
+            Log.w(TAG, "addPickerRow failed", t);
+        }
+    }
+
+    /**
+     * Puts our row id right after rif's Random row. If the user hid Random (the picker's own
+     * "Show random" switch), randnsfw stays hidden too. Does nothing if the row is already there.
+     */
+    static void insertPickerRow(List<Integer> ids) {
+        if (ids.contains(ID_RANDNSFW)) return;
+        int at = ids.indexOf(ID_RANDOM);
+        if (at >= 0) ids.add(at + 1, ID_RANDNSFW);
+    }
+
+    /**
+     * Called by the picker adapter's `onBindViewHolder` just before it sets a row's label, with
+     * the label rif chose (null for an id it doesn't know) and the row id.
+     */
+    public static String pickerLabel(String label, int id) {
+        return id == ID_RANDNSFW ? RANDNSFW_LABEL : label;
     }
 
     /** TRUE for /r/randnsfw, FALSE for /r/random, null if the path is not a random listing. */

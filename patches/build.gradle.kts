@@ -11,3 +11,11 @@ patches {
         license = "GNU General Public License v3.0"
     }
 }
+
+dependencies {
+    // JVM tests over the compiled patches (src/test). Test-only, never bundled.
+    testImplementation("junit:junit:4.13.2")
+}
+
+// buildAndroid doesn't run the tests by itself; make it do so (cached when nothing changed).
+tasks.matching { it.name == "buildAndroid" }.configureEach { dependsOn("test") }
