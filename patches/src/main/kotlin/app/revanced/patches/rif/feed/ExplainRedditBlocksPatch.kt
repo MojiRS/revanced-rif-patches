@@ -7,6 +7,7 @@ import app.revanced.patcher.extensions.InstructionExtensions.getInstruction
 import app.revanced.patcher.extensions.InstructionExtensions.instructions
 import app.revanced.patcher.fingerprint
 import app.revanced.patcher.patch.bytecodePatch
+import app.revanced.patches.rif.ads.platinumAdSlotFixPatch
 import app.revanced.patches.rif.shared.RIF_COMPATIBILITY
 import app.revanced.patches.rif.shared.requireScratchRegister
 import com.android.tools.smali.dexlib2.Opcode
@@ -57,6 +58,7 @@ val explainRedditBlocksPatch = bytecodePatch(
     name = "Explain Reddit blocks",
     description = "Shows \"Reddit is temporarily blocking requests\" instead of \"Error: forbidden\" when Reddit blocks a feed.",
 ) {
+    dependsOn(platinumAdSlotFixPatch)
     compatibleWith(*RIF_COMPATIBILITY)
     extendWith("extensions/extension.rve")
 
