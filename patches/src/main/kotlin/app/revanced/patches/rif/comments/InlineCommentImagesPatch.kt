@@ -37,6 +37,14 @@ val inlineImagesSettingsResourcePatch = resourcePatch(
             category.appendChild(doc.checkBoxPreference("INLINE_IMAGES", "Inline images"))
             category.appendChild(
                 doc.checkBoxPreference(
+                    "INLINE_IMAGES_HIDE_URL",
+                    "Hide bare image links",
+                    dependency = "INLINE_IMAGES",
+                    summary = "Hide image links that are just a URL without link text",
+                ),
+            )
+            category.appendChild(
+                doc.checkBoxPreference(
                     "INLINE_ALBUM_NAVIGATION",
                     "Inline album navigation",
                     dependency = "INLINE_IMAGES",
@@ -49,6 +57,22 @@ val inlineImagesSettingsResourcePatch = resourcePatch(
                     "INLINE_VIDEOS_AUTOPLAY",
                     "Autoplay inline videos",
                     dependency = "INLINE_VIDEOS",
+                ),
+            )
+            category.appendChild(
+                doc.checkBoxPreference(
+                    "INLINE_VIDEOS_HIDE_URL",
+                    "Hide bare video links",
+                    dependency = "INLINE_VIDEOS",
+                    summary = "Hide video links that are just a URL without link text",
+                ),
+            )
+            category.appendChild(
+                doc.checkBoxPreference(
+                    "INLINE_VIDEOS_PROGRESS_BAR",
+                    "Video progress bar",
+                    dependency = "INLINE_VIDEOS",
+                    summary = "Always show a progress bar below inline videos",
                 ),
             )
             // Size settings: enabled while images or videos is on (RevancedSettingsFragment

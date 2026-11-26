@@ -323,7 +323,10 @@ public final class InlineImages {
                         continue;
                     }
                     String linkText = body.subSequence(start, end).toString();
-                    boolean bare = isBareLinkText(linkText, p.link.getURL()) || isHideableLinkText(linkText);
+                    // A bare link whose text the media replaces (the settings decide, per kind);
+                    // otherwise its text stays and the media goes on a line below.
+                    boolean bare = (isBareLinkText(linkText, p.link.getURL()) || isHideableLinkText(linkText))
+                            && (media.isVideo ? Settings.hideBareVideoLinks() : Settings.hideBareImageLinks());
                     if (!media.missing) {
                         Built built = build(media, p.link, bare);
                         if (built == null) continue;
@@ -333,17 +336,18 @@ public final class InlineImages {
                         } else {
                             setSpans(body, built, start, end);
                         }
-                    } else if (bare && !media.isVideo) {
+                    } else if (bare) {
                         // Bare URL (or "[gif]"): the placeholder replaces the link text
-                        // already, as the image will (a visible link would look like it
-                        // needs tapping). The link span under it still opens the link.
+                        // already, as the image or video will (a visible link would look like
+                        // it needs tapping). The link span under it still opens the link.
                         PlaceholderSpan box = new PlaceholderSpan(media.hintW, media.hintH);
                         body.setSpan(box, start, end, Spanned.SPAN_INCLUSIVE_EXCLUSIVE);
                         p.bare = true;
                         p.marker = box;
                     } else {
-                        // [text](url) link or a video (also an imgur album already known to
-                        // hold one): the line below gets a placeholder box.
+                        // [text](url) link, or a bare link the settings keep visible (also an
+                        // imgur album already known to hold a video): the line below gets a
+                        // placeholder box.
                         PlaceholderSpan box = new PlaceholderSpan(media.hintW, media.hintH);
                         body.insert(end, "\n\uFFFC");
                         body.setSpan(box, end + 1, end + 2, Spanned.SPAN_INCLUSIVE_EXCLUSIVE);
@@ -402,7 +406,11 @@ public final class InlineImages {
     private static Built build(Media media, URLSpan link, boolean bare) {
         if (media.video != null) {
             ImageSpan span = InlineVideos.newSpan(media, link);
-            return new Built(span, new ImageClickSpan(span, link), true);
+            // A video always needs its own tap handler (play, toggle the controls); the link
+            // span would open rif's player. Bare and hidden: it replaces the link text. [bare]
+            // can come from an image placeholder (an imgur album that holds a video), so the
+            // video setting is checked again here.
+            return new Built(span, new ImageClickSpan(span, link), !(bare && Settings.hideBareVideoLinks()));
         }
         Drawable drawable = media.takeDecoded();
         if (drawable == null) drawable = toDrawable(media.data);

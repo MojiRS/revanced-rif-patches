@@ -540,6 +540,7 @@ public final class InlineVideos {
         final FrameLayout box;
         final TextureView video;
         final Controls controls;
+        final ProgressLine progress;
         final VideoSpan span;
         Surface surface;
 
@@ -557,6 +558,10 @@ public final class InlineVideos {
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
             box.addView(controls, new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            // Last child (updateContainer finds Controls at index 1 of a box with 2 or more).
+            progress = new ProgressLine(ctx, this);
+            box.addView(progress, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, Math.round(dp(PROGRESS_DP)), Gravity.BOTTOM));
         }
 
         @Override
@@ -624,6 +629,8 @@ public final class InlineVideos {
         boolean audioPrepared;
         boolean audioLoading; // the sound file is being downloaded (see loadSound)
         boolean rendering;
+        // The video has shown a frame of playback (or was resumed mid-way): the progress line may show.
+        boolean played;
         boolean paused;
         boolean muted = true;
         // Repeat toggle (on by default); ended = stopped on the last frame (repeat off).
@@ -791,8 +798,11 @@ public final class InlineVideos {
         Player existing = PLAYERS.get(span);
         if (existing != null) {
             // Re-bound into a new row: keep playing, now into this view.
+            Overlay previous = existing.owner;
             existing.owner = overlay;
             existing.video.setSurface(overlay.surface);
+            if (previous != null && previous != overlay) previous.progress.update();
+            overlay.progress.update();
             return;
         }
         if (PLAYERS.size() >= MAX_PLAYERS) {
@@ -827,13 +837,18 @@ public final class InlineVideos {
                 } else if (!player.paused) {
                     m.start();
                 }
-                if (resume != null) player.ended = resume.ended;
+                if (resume != null) {
+                    player.ended = resume.ended;
+                    player.played = resume.at > 0 || resume.ended;
+                }
                 overlayChanged(player);
             });
             mp.setOnInfoListener((m, what, extra) -> {
                 if (what == MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START) {
                     player.rendering = true;
                     clearSnapshot(span, player.owner);
+                    if (!player.played && !player.paused) player.played = true;
+                    overlayChanged(player);
                 }
                 return false;
             });
@@ -945,6 +960,15 @@ public final class InlineVideos {
 
     private static void setPaused(Player player, boolean paused) {
         player.paused = paused;
+        if (!paused) player.played = true;
+        try {
+            setPausedNow(player, paused);
+        } finally {
+            overlayChanged(player);
+        }
+    }
+
+    private static void setPausedNow(Player player, boolean paused) {
         if (!player.prepared) return;
         if (!paused && player.ended) {
             player.ended = false;
@@ -1426,7 +1450,9 @@ public final class InlineVideos {
 
     private static void overlayChanged(Player player) {
         Overlay owner = player.owner;
-        if (owner != null) owner.controls.refresh();
+        if (owner == null) return;
+        owner.controls.refresh();
+        owner.progress.update();
     }
 
     // ---- taps -------------------------------------------------------------------------
@@ -1806,6 +1832,7 @@ public final class InlineVideos {
             removeCallbacks(tick);
             post(tick);
             updateContainer();
+            overlay.progress.update(); // hides: the controls have their own seek bar
         }
 
         void hide() {
@@ -1814,6 +1841,7 @@ public final class InlineVideos {
             removeCallbacks(tick);
             setVisibility(GONE);
             updateContainer();
+            overlay.progress.update();
         }
 
         void interacted() {
@@ -1834,7 +1862,7 @@ public final class InlineVideos {
             boolean anyShown = false;
             for (int i = 0; i < container.getChildCount(); i++) {
                 View child = container.getChildAt(i);
-                if (child instanceof FrameLayout && ((FrameLayout) child).getChildCount() == 2
+                if (child instanceof FrameLayout && ((FrameLayout) child).getChildCount() >= 2
                         && ((FrameLayout) child).getChildAt(1) instanceof Controls) {
                     anyShown |= ((Controls) ((FrameLayout) child).getChildAt(1)).shown;
                 }
@@ -1870,6 +1898,96 @@ public final class InlineVideos {
             Player player = PLAYERS.get(overlay.span);
             if (player != null) seek(player, Math.round(fraction * player.duration()));
             refresh();
+        }
+    }
+
+    private static final float PROGRESS_DP = 3;
+    private static final long PROGRESS_TICK_MS = 80;
+
+    /**
+     * The thin progress line over the bottom edge of a video (YouTube mobile's minimal seek
+     * bar): grey track, white played part, no scrubber, not touchable. Shown once the video
+     * has played and while its controls are hidden (they have their own seek bar); frozen
+     * while paused. It ticks on its own only while shown and playing, and stops itself
+     * when the player is released, paused or ended, the controls come up, or the view detaches.
+     */
+    private static final class ProgressLine extends View {
+        private final Overlay overlay;
+        private final Paint track = new Paint();
+        private final Paint played = new Paint();
+        private float fraction;
+        private boolean ticking;
+        private final Runnable tick = new Runnable() {
+            @Override
+            public void run() {
+                ticking = false;
+                try {
+                    update();
+                } catch (Throwable t) {
+                    Log.w(TAG, "progress line tick failed", t);
+                }
+            }
+        };
+
+        ProgressLine(Context ctx, Overlay overlay) {
+            super(ctx);
+            this.overlay = overlay;
+            track.setColor(0x80808080);
+            played.setColor(0xFFFFFFFF);
+            setVisibility(GONE);
+            setClickable(false); // taps fall through to the text (play / show the controls)
+            setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
+        }
+
+        /** Re-evaluates whether to show, what to show, and whether to keep ticking. */
+        void update() {
+            Player player = PLAYERS.get(overlay.span);
+            boolean show = player != null && player.owner == overlay && player.prepared && player.played
+                    && !overlay.controls.shown && Settings.videoProgressBar();
+            int total = show ? player.duration() : 0;
+            if (total <= 0) {
+                stopTicking();
+                if (getVisibility() != GONE) setVisibility(GONE);
+                return;
+            }
+            float f = Math.max(0f, Math.min(1f, player.position() / (float) total));
+            if (getVisibility() != VISIBLE) setVisibility(VISIBLE);
+            if (f != fraction) {
+                fraction = f;
+                invalidate();
+            }
+            boolean run = !player.paused && !player.ended && isAttachedToWindow();
+            if (run && !ticking) {
+                ticking = true;
+                postDelayed(tick, PROGRESS_TICK_MS);
+            } else if (!run) {
+                stopTicking();
+            }
+        }
+
+        private void stopTicking() {
+            if (!ticking) return;
+            ticking = false;
+            removeCallbacks(tick);
+        }
+
+        @Override
+        protected void onDetachedFromWindow() {
+            stopTicking();
+            super.onDetachedFromWindow();
+        }
+
+        @Override
+        protected void onAttachedToWindow() {
+            super.onAttachedToWindow();
+            update();
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            int w = getWidth(), h = getHeight();
+            canvas.drawRect(0, 0, w, h, track);
+            canvas.drawRect(0, 0, w * fraction, h, played);
         }
     }
 

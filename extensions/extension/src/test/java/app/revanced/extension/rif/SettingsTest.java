@@ -17,5 +17,8 @@ public class SettingsTest {
         assertTrue(Settings.inlineVideos());
         assertTrue(Settings.inlineTables());
         assertTrue(Settings.longPressImageSelectsComment());
+        assertTrue(Settings.hideBareImageLinks());
+        assertTrue(Settings.hideBareVideoLinks());
+        assertTrue(Settings.videoProgressBar());
     }
 }

@@ -25,6 +25,9 @@ public final class Settings {
     public static final String KEY_INLINE_IMAGES_LONG_PRESS_DELAY = "INLINE_IMAGES_LONG_PRESS_DELAY";
     public static final String KEY_INLINE_VIDEOS = "INLINE_VIDEOS";
     public static final String KEY_INLINE_VIDEOS_AUTOPLAY = "INLINE_VIDEOS_AUTOPLAY";
+    public static final String KEY_INLINE_IMAGES_HIDE_URL = "INLINE_IMAGES_HIDE_URL";
+    public static final String KEY_INLINE_VIDEOS_HIDE_URL = "INLINE_VIDEOS_HIDE_URL";
+    public static final String KEY_INLINE_VIDEOS_PROGRESS_BAR = "INLINE_VIDEOS_PROGRESS_BAR";
     public static final String KEY_INLINE_TABLES = "INLINE_TABLES";
     public static final String KEY_YOUTUBE_CAPTIONS_LANDSCAPE = "YOUTUBE_CAPTIONS_LANDSCAPE";
     public static final String KEY_YOUTUBE_CAPTIONS_VERTICAL = "YOUTUBE_CAPTIONS_VERTICAL";
@@ -156,6 +159,21 @@ public final class Settings {
 
     public static boolean autoplayInlineVideos() {
         return get(KEY_INLINE_VIDEOS_AUTOPLAY, true);
+    }
+
+    /** A bare image link (or "[gif]") is replaced by the image; off: the link text stays, image below it. */
+    public static boolean hideBareImageLinks() {
+        return get(KEY_INLINE_IMAGES_HIDE_URL, true);
+    }
+
+    /** A bare video link is replaced by the video; off: the link text stays, video below it. */
+    public static boolean hideBareVideoLinks() {
+        return get(KEY_INLINE_VIDEOS_HIDE_URL, true);
+    }
+
+    /** Thin progress line over the bottom edge of a started inline video while its controls are hidden. */
+    public static boolean videoProgressBar() {
+        return get(KEY_INLINE_VIDEOS_PROGRESS_BAR, true);
     }
 
     /** Captions on by default: landscape videos (also when the shape is unknown). Off unless turned on. */
