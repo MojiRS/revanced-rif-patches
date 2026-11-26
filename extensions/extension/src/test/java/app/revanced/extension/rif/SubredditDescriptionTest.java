@@ -35,6 +35,12 @@ public class SubredditDescriptionTest {
     }
 
     @Test
+    public void emptyDescriptionTakesPublicDescription() throws Exception {
+        byte[] out = SubredditDescription.apply(about("\"\"", quoted(HTML)));
+        assertArrayEquals(about(quoted(HTML), quoted(HTML)), out);
+    }
+
+    @Test
     public void realSidebarIsUntouched() {
         byte[] in = about(quoted("&lt;p&gt;side&lt;/p&gt;"), quoted(HTML));
         assertSame(in, SubredditDescription.apply(in));

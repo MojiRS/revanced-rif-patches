@@ -15,7 +15,7 @@ import java.util.regex.Pattern;
  * Fills an empty Old Reddit sidebar with the new Reddit description.
  *
  * rif's sidebar shows `description_html` from `/r/NAME/about.json` and, when Reddit sends null
- * for it (the Old Reddit sidebar is empty), its own "has not provided a description on Old Reddit"
+ * (or an empty string) for it (the Old Reddit sidebar is empty), its own "has not provided a description on Old Reddit"
  * text. `public_description_html` (the short new Reddit description) is in the same response, but
  * rif doesn't parse it. This copies it into `description_html` before rif parses the body, so rif
  * renders it exactly like a sidebar. If the new description is empty too, or anything goes wrong,
@@ -29,7 +29,7 @@ public final class SubredditDescription {
     // Bodies larger than this are passed through (about.json is a few KB).
     private static final int MAX_BYTES = 2 * 1024 * 1024;
     private static final Pattern NULL_DESCRIPTION =
-            Pattern.compile("\"description_html\"(\\s*):(\\s*)null");
+            Pattern.compile("\"description_html\"(\\s*):(\\s*)(?:null|\"\")");
 
     private SubredditDescription() {}
 
@@ -56,7 +56,7 @@ public final class SubredditDescription {
     }
 
     /**
-     * The JSON to hand to rif: [original] itself unless its `description_html` is null and
+     * The JSON to hand to rif: [original] itself unless its `description_html` is null or empty and
      * `public_description_html` is not, else a copy with the second in place of the first.
      */
     static byte[] apply(byte[] original) {
@@ -66,7 +66,7 @@ public final class SubredditDescription {
             Matcher m = NULL_DESCRIPTION.matcher(text);
             if (!m.find()) return original;
             JSONObject data = new JSONObject(text).optJSONObject("data");
-            if (data == null || !data.isNull("description_html")
+            if (data == null || !(data.isNull("description_html") || data.optString("description_html").isEmpty())
                     || data.isNull("public_description_html")) {
                 return original;
             }
