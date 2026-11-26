@@ -3,6 +3,7 @@ package app.revanced.patches.rif.feed
 import app.revanced.patcher.extensions.InstructionExtensions.addInstructions
 import app.revanced.patcher.fingerprint
 import app.revanced.patcher.patch.bytecodePatch
+import app.revanced.patches.rif.ads.platinumAdSlotFixPatch
 import app.revanced.patches.rif.shared.RIF_COMPATIBILITY
 import com.android.tools.smali.dexlib2.Opcode
 import com.android.tools.smali.dexlib2.iface.instruction.ReferenceInstruction
@@ -42,6 +43,7 @@ val subredditDescriptionFallbackPatch = bytecodePatch(
 ) {
     compatibleWith(*RIF_COMPATIBILITY)
     extendWith("extensions/extension.rve")
+    dependsOn(platinumAdSlotFixPatch)
 
     execute {
         // p1 = the response stream (the method has 5 registers, so p1 is v4 and fits invoke-static).
