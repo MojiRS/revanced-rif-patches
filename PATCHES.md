@@ -201,3 +201,13 @@ It covers two cases. A video Reddit hasn't produced yet (the post has no video d
 No settings.
 
 How it works: rif's video metadata loader parses the post JSON and returns null when the post has no video yet. A hook there keeps the first 256 KB of the response (rif gets an identical copy), and a second hook replaces the error toast in the loader's null branch: if that body is a post with `is_video` true and no `media`, it shows the message above, otherwise rif's toast. For the second case, a hook at the start of the player's error callback notes, per player, whether the DASH and HLS playlists of the v.redd.it video were answered with 403 (other failures are noted too), and a hook on the toast that ends rif's format-metadata fetch shows the message only when both were refused and nothing else failed. rif's mp4 fallback isn't used for playback (rif builds it as DASH and fails), so a refused video stays unplayable until Reddit serves it.
+
+## Subreddit description fallback
+
+Shows the new Reddit description in a subreddit's info (the sidebar) when the subreddit has no Old Reddit sidebar. rif reads the Old Reddit sidebar and otherwise shows "[This subreddit has not provided a description on Old Reddit.]"; many subreddits only fill in the short description that new Reddit shows, so this patch shows that instead. It is shown like a normal sidebar, links and formatting included, with no label. If the subreddit has neither, rif's message stays. Subreddits with an Old Reddit sidebar are unchanged.
+
+Only the short description is used, not the longer "About community" text of new Reddit.
+
+No settings.
+
+How it works: rif's sidebar loader requests `/r/<name>/about.json` and parses it on a background thread; when `description_html` is null it shows its own message. rif doesn't read `public_description_html` (the short new Reddit description) from the same response. A hook at the start of the loader's response parser lets the extension read the body (up to 2 MB, normally a few KB); if `description_html` is null and `public_description_html` is not empty, the extension copies the second into the first and hands rif the changed copy, so rif renders it with its own HTML renderer on every path (first load and re-render). Anything else, or any failure, hands rif the unchanged body.

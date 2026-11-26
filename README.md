@@ -27,6 +27,7 @@ The Morphe port of these patches can be found [here](https://github.com/MojiRS/m
 | **Explain Reddit blocks**         | Shows "Reddit is temporarily blocking requests" instead of "Error: forbidden" when Reddit blocks a feed.                                       |
 | **Fix random subreddit**          | Makes Random and r/randnsfw open random subreddits again, sourced from redditrand.com.                                                         |
 | **Explain processing videos**     | Says when a Reddit video is still processing instead of showing an error.                                                                      |
+| **Subreddit description fallback** | Shows the new Reddit description in a subreddit's info when it has no Old Reddit sidebar.                                                     |
 
 For details on how each patch works and its settings, see [PATCHES.md](PATCHES.md).
 
