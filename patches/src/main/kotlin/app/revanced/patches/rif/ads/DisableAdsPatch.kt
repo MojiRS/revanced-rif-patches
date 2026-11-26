@@ -141,10 +141,58 @@ val disableAdsSettingsResourcePatch = resourcePatch(
 
     execute {
         addRevancedPreferenceCategory("Disable ads") { doc, category ->
-            category.appendChild(doc.checkBoxPreference("BLOCK_ADS", "Block ads"))
+            category.appendChild(
+                doc.checkBoxPreference(
+                    "BLOCK_ADS",
+                    "Block ads",
+                    summary = "Hides rif's ad settings and keeps its pro features on.",
+                ),
+            )
         }
+
+        // rif's pro rows say "Requires ads enabled", but while Block ads is on ADS_ENABLED stays
+        // true and its row is hidden (AdSettings), so the text points at a switch nobody sees.
+        // Edited statically (also fixes settings-search summaries). An empty summary hides the
+        // summary line.
+        val changed = mutableSetOf<String>()
+        document("res/values/strings.xml").use { doc ->
+            val strings = doc.getElementsByTagName("string")
+            for (i in 0 until strings.length) {
+                val node = strings.item(i)
+                val name = (node as org.w3c.dom.Element).getAttribute("name")
+                val replacement = PRO_SUMMARIES[name] ?: continue
+                node.textContent = replacement
+                changed += name
+            }
+        }
+        // The "Cards for images" dialog repeats the phrase in its option descriptions.
+        document("res/values/arrays.xml").use { doc ->
+            val items = doc.getElementsByTagName("item")
+            for (i in 0 until items.length) {
+                val node = items.item(i)
+                if (node.textContent.contains(REQUIRES_ADS)) {
+                    node.textContent = node.textContent.replace(REQUIRES_ADS, "")
+                    changed += "arrays:$i"
+                }
+            }
+        }
+        val missing = PRO_SUMMARIES.keys - changed
+        if (missing.isNotEmpty()) throw PatchException("rif strings not found: $missing")
     }
 }
+
+private const val REQUIRES_ADS = "Requires ads enabled. "
+
+// rif free's "Requires ads enabled" summaries without that phrase (empty where it was all there was).
+private val PRO_SUMMARIES = mapOf(
+    "pref_dualpane_summary" to "Tablet recommended.",
+    "pref_native_image_albums_summary" to "For Imgur albums and Reddit galleries.",
+    "pref_reddit_visited_enabled_summary" to "Requires reddit premium (reddit.com/premium).",
+    "pref_synccit_enabled_summary" to "synccit.com.",
+    "pref_threads_cards_summary" to "",
+    "pref_enable_new_post_notifications_summary" to "",
+    "pref_moderator_enabled_summary" to "",
+)
 
 @Suppress("unused")
 val disableAdsPatch = bytecodePatch(
