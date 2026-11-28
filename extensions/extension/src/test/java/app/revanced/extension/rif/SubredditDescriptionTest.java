@@ -141,7 +141,7 @@ public class SubredditDescriptionTest {
         String rules = out.substring(HTML.length());
         // Escaped like the rest of about.json: no raw markup reaches rif.
         assertFalse(rules.contains("<"));
-        assertEquals("<div class=\"md\"><h3>Rules</h3>\n<ol>\n"
+        assertEquals("<div class=\"md\"><br><h3>Rules</h3>\n<ol>\n"
                 + "<li><p><strong>No &lt;trolling&gt; &amp; baiting</strong></p>"
                 + "<p>Be nice. See <a href=\"https://example.com/?a=1&amp;b=2\">the wiki</a>.</p></li>\n"
                 + "<li><p><strong>Spoilers</strong></p><p>Tag them.</p>\n\n<ul>\n<li>In titles too.</li>\n</ul></li>\n"
@@ -151,7 +151,7 @@ public class SubredditDescriptionTest {
     @Test
     public void ruleWithoutExplanationIsTitleOnly() {
         String html = SubredditDescription.rulesHtml(rulesJson("Only a title", null, "Blank", ""), false);
-        assertEquals("<div class=\"md\"><h3>Rules</h3>\n<ol>\n"
+        assertEquals("<div class=\"md\"><br><h3>Rules</h3>\n<ol>\n"
                 + "<li><p><strong>Only a title</strong></p></li>\n"
                 + "<li><p><strong>Blank</strong></p></li>\n</ol>\n</div>", html);
     }
@@ -159,7 +159,7 @@ public class SubredditDescriptionTest {
     @Test
     public void plainDescriptionWhenNoHtml() {
         String json = "{\"rules\": [{\"short_name\": \"T\", \"description\": \"a < b\", \"description_html\": null}]}";
-        assertEquals("<div class=\"md\"><h3>Rules</h3>\n<ol>\n<li><p><strong>T</strong></p><p>a &lt; b</p></li>\n</ol>\n</div>",
+        assertEquals("<div class=\"md\"><br><h3>Rules</h3>\n<ol>\n<li><p><strong>T</strong></p><p>a &lt; b</p></li>\n</ol>\n</div>",
                 SubredditDescription.rulesHtml(json, false));
     }
 
@@ -198,7 +198,7 @@ public class SubredditDescriptionTest {
         String raw = "<div class=\"md\"><p>Hi &amp; bye</p></div>";
         String out = description(SubredditDescription.apply(about("null", quoted(raw)),
                 source(rulesJson("A & B", wrapped("<p>x</p>")))));
-        assertEquals(raw + "<div class=\"md\"><h3>Rules</h3>\n<ol>\n"
+        assertEquals(raw + "<div class=\"md\"><br><h3>Rules</h3>\n<ol>\n"
                 + "<li><p><strong>A &amp; B</strong></p><p>x</p></li>\n</ol>\n</div>", out);
     }
 }

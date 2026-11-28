@@ -178,7 +178,9 @@ public final class SubredditDescription {
             items.append(explanation).append("</li>\n");
         }
         if (items.length() == 0) return "";
-        String html = "<div class=\"md\"><h3>Rules</h3>\n<ol>\n" + items + "</ol>\n</div>";
+        // The <br>: rif ends the description's paragraph with only a short break, so without it the
+        // heading sits tighter under the text than a real sidebar's headings do.
+        String html = "<div class=\"md\"><br><h3>Rules</h3>\n<ol>\n" + items + "</ol>\n</div>";
         return escaped ? escape(html) : html;
     }
 
