@@ -40,7 +40,7 @@ val inlineImagesSettingsResourcePatch = resourcePatch(
                     "INLINE_IMAGES_HIDE_URL",
                     "Hide bare image links",
                     dependency = "INLINE_IMAGES",
-                    summary = "Hide image links that are just a URL without link text",
+                    summary = "Hide image links that are just a URL without link text.",
                 ),
             )
             category.appendChild(
@@ -64,7 +64,7 @@ val inlineImagesSettingsResourcePatch = resourcePatch(
                     "INLINE_VIDEOS_HIDE_URL",
                     "Hide bare video links",
                     dependency = "INLINE_VIDEOS",
-                    summary = "Hide video links that are just a URL without link text",
+                    summary = "Hide video links that are just a URL without link text.",
                 ),
             )
             category.appendChild(
@@ -72,7 +72,7 @@ val inlineImagesSettingsResourcePatch = resourcePatch(
                     "INLINE_VIDEOS_PROGRESS_BAR",
                     "Video progress bar",
                     dependency = "INLINE_VIDEOS",
-                    summary = "Always show a progress bar below inline videos",
+                    summary = "Always show a progress bar below inline videos.",
                 ),
             )
             // Size settings: enabled while images or videos is on (RevancedSettingsFragment

@@ -69,6 +69,8 @@ public class RevancedSettingsFragment extends RifBaseSettingsFragment {
             greyListener = (prefs, key) -> {
                 try {
                     if (key == null || isGreyingKey(key)) applyGreying(platinum);
+                    // Free only (Platinum has no Block ads): rif's pro flag goes back on with it.
+                    if (!platinum && Settings.KEY_BLOCK_ADS.equals(key)) AdSettings.blockAdsSwitchedOn(prefs);
                 } catch (Throwable t) {
                     Log.w(TAG, "greying failed", t);
                 }

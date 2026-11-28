@@ -712,9 +712,12 @@ public final class InlineImages {
         // With images off only a video may embed, and only an imgur album can still turn out to be
         // one (a single mp4 item): everything else stays a plain link, without a fetch.
         boolean images = Settings.inlineImages();
+        if (!images && !Settings.inlineVideos()) return null;
         Album album = imgurAlbum(url, network);
         if (!images && album == null) return null;
-        if (album == Album.MISSING) return Media.missing(0, 0);
+        // Not known yet: with images off only a video can come of it, so the placeholder (and the
+        // listing request) is the video kind's: it follows the video setting, not the image one.
+        if (album == Album.MISSING) return images ? Media.missing(0, 0) : Media.missingVideo(0, 0);
         String imageUrl = album != null ? album.urls.get(0) : resolveImageUrl(url, network);
         if (imageUrl == MISSING_URL) return Media.missing(0, 0);
         if (imageUrl == null) return null;

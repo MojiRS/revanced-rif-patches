@@ -35,6 +35,9 @@ public final class Settings {
     public static final String KEY_HIDE_BLOCKED_DISTINGUISHED = "HIDE_BLOCKED_DISTINGUISHED";
     public static final String KEY_RANDNSFW_SIDEBAR = "RANDNSFW_SIDEBAR";
 
+    // Not a setting: set once the 1.10.1 videos-follow-images migration has run (see migrate()).
+    private static final String KEY_MIGRATED_VIDEOS_FROM_IMAGES = "MIGRATED_INLINE_VIDEOS_FROM_IMAGES";
+
     private static SharedPreferences prefs;
     private static Context appContext;
 
@@ -50,7 +53,28 @@ public final class Settings {
             if (context != null && appContext == null) {
                 appContext = context.getApplicationContext();
                 prefs = null; // re-resolve against the real context
+                migrate();
             }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /**
+     * One-time upgrade step. Before 1.10.1 inline videos only worked with inline images on, so a
+     * user who switched Inline images off got no inline videos either; the dependency is gone, and
+     * their stored-true default would now turn videos on. Keep what they had: Inline images stored
+     * off -> Inline videos stored off. The marker is written on the first run either way, so fresh
+     * installs and later changes are never touched.
+     */
+    private static void migrate() {
+        try {
+            SharedPreferences p = prefs();
+            if (p == null || p.contains(KEY_MIGRATED_VIDEOS_FROM_IMAGES)) return;
+            SharedPreferences.Editor e = p.edit();
+            if (p.contains(KEY_INLINE_IMAGES) && !p.getBoolean(KEY_INLINE_IMAGES, true)) {
+                e.putBoolean(KEY_INLINE_VIDEOS, false);
+            }
+            e.putBoolean(KEY_MIGRATED_VIDEOS_FROM_IMAGES, true).apply();
         } catch (Throwable ignored) {
         }
     }
