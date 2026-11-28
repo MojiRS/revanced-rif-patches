@@ -64,6 +64,14 @@ public final class RedditApi {
         return r;
     }
 
+    /**
+     * A GET with rif's user agent and no token, as rif itself makes its requests when no account
+     * is logged in (to www.reddit.com).
+     */
+    static Resp anonymous(Context ctx, String url, int connectMs, int readMs) throws IOException {
+        return call(ctx, url, null, null, connectMs, readMs);
+    }
+
     private static Resp call(Context ctx, String url, byte[] form, String token, int connectMs, int readMs)
             throws IOException {
         HttpURLConnection conn = null;
@@ -72,7 +80,7 @@ public final class RedditApi {
             conn.setConnectTimeout(connectMs);
             conn.setReadTimeout(readMs);
             conn.setRequestProperty("User-Agent", userAgent(ctx));
-            conn.setRequestProperty("Authorization", "bearer " + token);
+            if (token != null) conn.setRequestProperty("Authorization", "bearer " + token);
             if (form != null) {
                 conn.setDoOutput(true);
                 conn.setRequestMethod("POST");

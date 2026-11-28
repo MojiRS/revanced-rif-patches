@@ -16,7 +16,7 @@ The Morphe port of these patches can be found [here](https://github.com/MojiRS/m
 | **Fix imgur albums**              | Fixes imgur albums crashing or failing to load.                                                                                                |
 | **Fix YouTube videos**            | Fixes the built-in YouTube player.                                                                                                             |
 | **YouTube player controls**       | Double-tap to seek, hold for 2x speed, and speed and captions controls in the YouTube player.                                                  |
-| **Fix share links**               | Opens Reddit share links (reddit.com/r/…/s/…) directly in rif instead of bouncing through the browser, and fixes reddit.com/media image links. |
+| **Fix share links**               | Opens Reddit share links (reddit.com/r/…/s/…) directly in rif instead of bouncing through the browser, and fixes reddit.com/media image links and poll links. |
 | **Repair broken gallery images**  | Shows the images of galleries that fail to load because Reddit marks some of their images as failed.                                           |
 | **Keep reply box above keyboard** | Keeps the reply box unobscured above the keyboard.                                                                                             |
 | **Fix broken markdown links**     | Shows links like `[name](u/name)` as links instead of raw text.                                                                                |

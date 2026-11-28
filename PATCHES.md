@@ -27,6 +27,13 @@ Setting: *Block ads*.
 
 Shows images, GIFs, videos and tables in comments and text posts inline.
 
+**Polls**
+
+- rif doesn't know Reddit polls: a poll post showed only its text and a "View Poll" link, which opened rif's browser and bounced straight back to the post. Now the post's page shows the poll under its text: the options, the number of votes and when it ends (or that it has ended). Once Reddit shares the results (the poll has ended, or you voted on reddit.com), each option also shows its percentage, vote count and a bar, and your own vote is in bold with a ✓.
+- Read-only: voting isn't possible from rif.
+- One small request per poll post, made when its page opens (never in the feed), and reused for a couple of minutes. With Fix share links, tapping "View Poll" stays on the post (or opens it, from elsewhere) instead of going through the browser.
+- Always on, no setting.
+
 **Tables**
 
 - A markdown table is drawn in place of rif's "[View formatted table]" link and its plain-text cells: thin borders, bold header row, left/center/right alignment, links in cells (tap one to open it like any link). Columns share the comment's width and long text wraps. Tap the table anywhere else to open rif's zoomable popup.
@@ -88,7 +95,9 @@ How it works: rif puts the YouTube player library's control overlay over the emb
 
 ## Fix share links
 
-Opens Reddit share links (reddit.com/r/…/s/…) directly in rif instead of bouncing through the browser, and fixes reddit.com/media image links.
+Opens Reddit share links (reddit.com/r/…/s/…) directly in rif instead of bouncing through the browser, and fixes reddit.com/media image links and poll links.
+
+Poll posts end with a "View Poll" link (`reddit.com/poll/…`) that rif opens in its browser, which Reddit sends back to the post, opening it a second time. Tapping it now stays on the post, where Inline comment images shows the poll, or opens the post from anywhere else. If you've chosen the external browser for such links ("Prefer external browser" or "External browser URLs"), they still open there; if the poll couldn't be loaded, rif behaves as before.
 
 `reddit.com/media?url=…` links wrap an image. rif mistakes them for a link to the post with the id `media`, an unrelated r/funny post, so the image never opens. This patch opens the wrapped link instead.
 

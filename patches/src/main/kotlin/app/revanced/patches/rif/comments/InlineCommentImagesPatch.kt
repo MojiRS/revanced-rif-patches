@@ -14,14 +14,17 @@ import app.revanced.patches.rif.settings.revancedSettingsResourcePatch
 import app.revanced.patches.rif.shared.RIF_BUILDS
 import app.revanced.patches.rif.shared.RIF_COMPATIBILITY
 import app.revanced.patches.rif.shared.requireScratchRegister
+import app.revanced.patches.rif.shared.rifUserAgentMethod
 import com.android.tools.smali.dexlib2.Opcode
 import com.android.tools.smali.dexlib2.iface.instruction.FiveRegisterInstruction
 import com.android.tools.smali.dexlib2.iface.instruction.Instruction
 import com.android.tools.smali.dexlib2.iface.instruction.ReferenceInstruction
+import com.android.tools.smali.dexlib2.iface.reference.MethodReference
 
 private const val EXTENSION = "Lapp/revanced/extension/rif/InlineImages;"
 private const val TABLES_EXTENSION = "Lapp/revanced/extension/rif/InlineTables;"
 private const val STEP_SEEK_BAR = "Lapp/revanced/extension/rif/StepSeekBarPreference;"
+private const val POLLS_EXTENSION = "Lapp/revanced/extension/rif/Polls;"
 
 // Adds the "Inline media" category to the rif patches screen. Album navigation follows
 // "Inline images" and autoplay "Inline videos" (one dependency key each); the size settings and
@@ -298,6 +301,39 @@ val inlineCommentImagesPatch = bytecodePatch(
                 "invoke-static { v$textViewRegister }, $EXTENSION->attach(Landroid/widget/TextView;)V",
             )
         }
+
+        // Polls: the comments-page post body gets its poll block, never the feed. Hooked at the
+        // entry of the binder's own (TextView, View)V helper (free e5.u.C / Platinum f5.u.C, which
+        // posts the collapse-button setup) that o() calls right after the rendered body's setText,
+        // so o() keeps just the one hook above. p1 = the body TextView.
+        val opBind = opSelftextBindFingerprint.method
+        val afterSetText = opBind.instructions.mapNotNull { insn ->
+            ((insn as? ReferenceInstruction)?.reference as? MethodReference)?.takeIf {
+                insn.opcode == Opcode.INVOKE_VIRTUAL && it.definingClass == opBind.definingClass &&
+                    it.returnType == "V" &&
+                    it.parameterTypes.map(Any::toString) == listOf("Landroid/widget/TextView;", "Landroid/view/View;")
+            }
+        }.distinctBy { it.name }.singleOrNull()
+            ?: throw PatchException("post body's (TextView, View) helper not found in ${opBind.definingClass}")
+        proxy(opSelftextBindFingerprint.classDef).mutableClass.methods.first {
+            it.name == afterSetText.name && it.parameterTypes.map(Any::toString) == afterSetText.parameterTypes.map(Any::toString)
+        }.addInstructions(
+            0,
+            "invoke-static { p1 }, $POLLS_EXTENSION->bind(Landroid/widget/TextView;)V",
+        )
+
+        // Polls fetch the post's JSON with rif's user agent: Polls.rifUserAgent() is a stub
+        // (return null, one local) that now returns rif's (after any Spoof client patch).
+        val uaMethod = rifUserAgentMethod()
+        proxy(classes.first { it.type == POLLS_EXTENSION }).mutableClass.methods
+            .firstOrNull { it.name == "rifUserAgent" }?.addInstructions(
+                0,
+                """
+                    invoke-static { }, $uaMethod
+                    move-result-object v0
+                    return-object v0
+                """,
+            ) ?: throw PatchException("Polls.rifUserAgent not found")
 
         // 3) Full screen from an inline video continues where it was (FullscreenHandoff.kt).
         hookFullscreenHandoff()

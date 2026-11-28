@@ -870,6 +870,8 @@ public final class InlineImages {
         }
         // Video overlays: added for this text's videos, removed for ones that left.
         InlineVideos.attach(tv);
+        // A poll block lost to a later setText (e.g. an image filling in) comes back.
+        Polls.reattach(tv);
     }
 
     /** Drawable.Callback that invalidates a TextView it holds only weakly. */
