@@ -18,7 +18,7 @@ public class PollModelTest {
 
     // An open poll the user hasn't voted in: no per-option vote_count.
     private static final String OPEN = "[{\"kind\":\"Listing\",\"data\":{\"children\":[{\"kind\":\"t3\",\"data\":{"
-            + "\"id\":\"1y71ps3\",\"selftext\":\"x\\n\\n[View Poll](https://www.reddit.com/poll/1y71ps3)\","
+            + "\"id\":\"1y71ps3\",\"subreddit\":\"DeepRockGalactic\",\"selftext\":\"x\\n\\n[View Poll](https://www.reddit.com/poll/1y71ps3)\","
             + "\"poll_data\":{\"prediction_status\":null,\"tournament_id\":null,"
             + "\"voting_end_timestamp\":1796066673442,\"total_vote_count\":2048,\"vote_updates_remained\":null,"
             + "\"is_prediction\":false,\"resolved_option_id\":null,\"user_won_amount\":null,"
@@ -94,18 +94,63 @@ public class PollModelTest {
     }
 
     @Test
-    public void footerOnlyWhileOpen() {
+    public void footerOnlyWhileOpenAndNotVoted() {
         PollModel ended = PollModel.parse(ENDED);
         assertNull(ended.footer(ended.endMs));
         assertNull(ended.footer(ended.endMs + 1));
+        // Ended without a vote: still no footer.
+        assertNull(new PollModel(ended.options, 7240, ended.endMs, null).footer(ended.endMs + 1));
         PollModel open = PollModel.parse(OPEN);
-        assertEquals("Open in browser to vote/show results", open.footer(open.endMs - 1));
-        // Results shown while open (author, or after voting): the footer stays.
-        PollModel openWithCounts = new PollModel(ended.options, 7240, open.endMs, "32590832");
-        assertTrue(openWithCounts.hasCounts());
-        assertEquals(PollModel.FOOTER, openWithCounts.footer(open.endMs - 1));
+        assertEquals("Tap to vote (open in browser)", open.footer(open.endMs - 1));
+        // Voted while open (results show): no footer.
+        PollModel voted = new PollModel(ended.options, 7240, open.endMs, "32590832");
+        assertTrue(voted.hasCounts());
+        assertNull(voted.footer(open.endMs - 1));
+        // Results while open without a vote (the author): the footer stays.
+        assertEquals(PollModel.FOOTER, new PollModel(ended.options, 7240, open.endMs, null).footer(open.endMs - 1));
         // Unknown end time: treated as open.
         assertEquals(PollModel.FOOTER, new PollModel(open.options, 0, 0, null).footer(123));
+    }
+
+    @Test
+    public void emphasisOnlyOnceEnded() {
+        PollModel ended = PollModel.parse(ENDED);
+        long after = ended.endMs + 1;
+        assertTrue(ended.emphasized(ended.options.get(0), after));      // the winner
+        assertFalse(ended.emphasized(ended.options.get(1), after));     // the user's own vote
+        assertFalse(ended.emphasized(ended.options.get(2), after));
+        // The same results while the poll is open (voted): nothing stands out.
+        PollModel open = new PollModel(ended.options, 7240, ended.endMs, "32590832");
+        for (PollModel.Option o : open.options) assertFalse(open.emphasized(o, ended.endMs - 1));
+        // A tie: all winners.
+        PollModel tie = PollModel.parse("{\"voting_end_timestamp\":100,\"options\":["
+                + "{\"text\":\"a\",\"vote_count\":5,\"id\":\"1\"},{\"text\":\"b\",\"vote_count\":5,\"id\":\"2\"},"
+                + "{\"text\":\"c\",\"vote_count\":1,\"id\":\"3\"}],\"total_vote_count\":11}");
+        assertTrue(tie.emphasized(tie.options.get(0), 200));
+        assertTrue(tie.emphasized(tie.options.get(1), 200));
+        assertFalse(tie.emphasized(tie.options.get(2), 200));
+        // Ended without counts, or with no votes: nothing.
+        PollModel none = PollModel.parse("{\"voting_end_timestamp\":100,\"options\":["
+                + "{\"text\":\"a\",\"vote_count\":0,\"id\":\"1\"},{\"text\":\"b\",\"id\":\"2\"}]}");
+        assertFalse(none.emphasized(none.options.get(0), 200));
+        assertFalse(none.emphasized(none.options.get(1), 200));
+    }
+
+    @Test
+    public void browserUrl() {
+        assertEquals("DeepRockGalactic", PollModel.parse(OPEN).subreddit);
+        assertNull(PollModel.parse(ENDED).subreddit);
+        assertEquals("https://www.reddit.com/R/DeepRockGalactic/comments/1y71ps3/",
+                PollModel.browserUrl("1y71ps3", "DeepRockGalactic"));
+        assertEquals("https://www.reddit.com/R/u_moji-testing/comments/abc/",
+                PollModel.browserUrl("abc", "u_moji-testing"));
+        // Unknown or odd subreddit: any sub lands on the right post.
+        assertEquals("https://www.reddit.com/R/all/comments/abc/", PollModel.browserUrl("abc", null));
+        assertEquals("https://www.reddit.com/R/all/comments/abc/", PollModel.browserUrl("abc", "a/b?c"));
+        assertEquals("https://www.reddit.com/R/all/comments/abc/", PollModel.browserUrl("abc", ""));
+        // Never a path rif's intent filters claim (case-sensitive /r/ and /comments/ prefixes).
+        String u = PollModel.browserUrl("abc", "polls");
+        assertFalse(u.contains("/r/") || u.startsWith("https://www.reddit.com/comments/"));
     }
 
     @Test

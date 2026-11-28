@@ -58,15 +58,18 @@ import java.util.concurrent.Executors;
  * fetches the post's JSON once in the background ({@code /comments/<id>.json?limit=1}, with rif's
  * token and user agent) and shows a read-only block of text in the link's place ("Hide poll
  * links", on by default) or under the link's line, which then reads "View Poll in Browser": a
- * header ("Poll · 2,048 votes · ends in 3 days"), one line per option, with percentages, counts and
- * bars when Reddit returns them (once the poll ended or the user voted), and while the poll is open
- * a footer ("Open in browser to vote/show results"). The block only lives in the TextView's copy of
- * the text, never in rif's cached body, so quoting, copying and editing the post see rif's text.
- * Never in the feed.
+ * header ("Poll · 2,048 votes · ends in 3 days"), one bar per option (empty until Reddit returns
+ * counts, once the poll ended or the user voted; then filled, with percentages and counts; an
+ * ended poll's winner is bold), and while the poll is open and the user hasn't voted a footer
+ * ("Tap to vote (open in browser)"). The block only lives in the TextView's copy of the text,
+ * never in rif's cached body, so quoting, copying and editing the post see rif's text. Never in
+ * the feed.
  *
- * <p>A tap on the block or on the (renamed) link opens the poll in the default browser, never rif's
- * own: rif's in-app browser follows Reddit's redirect from /poll/ to the post and routes it back
- * into rif. Returning from the browser fetches the poll again, so a new vote shows.
+ * <p>A tap on the block or on the (renamed) link opens the poll's post in the default browser,
+ * never rif's own (rif's in-app browser follows Reddit's redirect from /poll/ to the post and
+ * routes it back into rif), at a URL rif doesn't claim ({@link PollModel#browserUrl}), so Firefox
+ * doesn't hand it back to rif either. Returning from the browser fetches the poll again, so a new
+ * vote shows.
  */
 public final class Polls {
 
@@ -241,22 +244,24 @@ public final class Polls {
     }
 
     /**
-     * Opens poll [id] in the default browser (not rif: rif's own browser routes the redirect to
-     * the post back into rif). The poll's data goes stale, and is fetched again once the user
-     * comes back, so a vote made there shows.
+     * Opens poll [id]'s post in the default browser (not rif: rif's own browser routes the
+     * redirect to the post back into rif), at {@link PollModel#browserUrl}, which no app claims.
+     * The poll's data goes stale, and is fetched again once the user comes back, so a vote made
+     * there shows. Also used for poll links rif would open externally (ShareLinks.interceptPoll).
      */
     static void openInBrowser(Context ctx, String id) {
         try {
             if (ctx == null) ctx = Settings.context();
             if (ctx == null) return;
-            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse("https://www.reddit.com/poll/" + id));
+            Poll e = CACHE.get(id);
+            String sub = e != null && e.model != null ? e.model.subreddit : null;
+            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(PollModel.browserUrl(id, sub)));
             intent.addCategory(Intent.CATEGORY_BROWSABLE);
             // Chrome and others reuse one tab per app for this.
             intent.putExtra("com.android.browser.application_id", ctx.getPackageName());
             if (!(ctx instanceof Activity)) intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             String browser = defaultBrowser(ctx);
             if (browser != null) intent.setPackage(browser);
-            Poll e = CACHE.get(id);
             if (e != null) e.fetchedAt = 0;
             try {
                 ctx.startActivity(intent);
@@ -558,23 +563,24 @@ public final class Polls {
         SpannableStringBuilder sb = new SpannableStringBuilder(afterLink ? "\n\n" : "");
         secondaryLine(sb, poll.header(now, locale), secondary);
 
-        // Leading column: the percentage, or a bullet while counts are hidden.
+        // Leading column: the percentage; left blank (same width) while counts are hidden, so the
+        // option texts don't move once results show.
         TextPaint paint = tv.getPaint();
-        String widest = counts ? "100%" : "•";
-        int column = (int) Math.ceil(paint.measureText(widest) + 8 * density);
+        int column = (int) Math.ceil(paint.measureText("100%") + 8 * density);
         // Text inside a bar starts a little in from its rounded edge.
-        int inset = counts ? Math.round(6 * density) : 0;
+        int inset = Math.round(6 * density);
         for (PollModel.Option o : poll.options) {
             sb.append('\n');
             int start = sb.length();
-            sb.append(counts ? poll.percent(o) + "%" : "•").append('\t');
+            sb.append(counts ? poll.percent(o) + "%" : "").append('\t');
             int textStart = sb.length();
             sb.append(o.text.isEmpty() ? " " : o.text);
-            boolean mine = poll.isUserChoice(o);
-            if (mine) {
+            // Only an ended poll's winner(s) stand out; the user's own vote just gets the ✓.
+            boolean strong = poll.emphasized(o, now);
+            if (strong) {
                 sb.setSpan(new Ours.Bold(), textStart, sb.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-                sb.append(" ✓");
             }
+            if (poll.isUserChoice(o)) sb.append(" ✓");
             if (counts) {
                 int c = sb.length();
                 sb.append(" · ").append(PollModel.count(o.votes, locale));
@@ -583,7 +589,7 @@ public final class Polls {
             int end = sb.length();
             sb.setSpan(new Ours.Tab(column), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
             sb.setSpan(new Ours.Indent(inset, inset + column), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-            sb.setSpan(new OptionSpan(counts ? poll.fraction(o) : -1f, mine, textColor, accent,
+            sb.setSpan(new OptionSpan(counts ? poll.fraction(o) : 0f, strong, textColor, accent,
                     Math.round(3 * density), 4 * density), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         }
         String footer = poll.footer(now);
@@ -687,12 +693,12 @@ public final class Polls {
 
     /**
      * One option's line(s): a little padding above and below, and behind it a faint track with
-     * the vote share filled in the theme's link colour (stronger for the user's own vote). No
-     * bar while counts are hidden ([fraction] < 0).
+     * the vote share filled in the theme's link colour (stronger for an ended poll's winner).
+     * Only the track while counts are hidden ([fraction] 0).
      */
     static final class OptionSpan implements LineBackgroundSpan, LineHeightSpan, Ours {
         private final float fraction;
-        private final boolean mine;
+        private final boolean strong;
         private final int textColor;
         private final int accent;
         private final int pad;
@@ -702,9 +708,9 @@ public final class Polls {
         private final Path path = new Path();
         private final float[] radii = new float[8];
 
-        OptionSpan(float fraction, boolean mine, int textColor, int accent, int pad, float radius) {
+        OptionSpan(float fraction, boolean strong, int textColor, int accent, int pad, float radius) {
             this.fraction = fraction;
-            this.mine = mine;
+            this.strong = strong;
             this.textColor = textColor;
             this.accent = accent;
             this.pad = pad;
@@ -739,7 +745,7 @@ public final class Polls {
             fill.setColor(withAlpha(textColor, 0x14));
             bar(canvas, left, t, right, b, first, last);
             if (fraction > 0) {
-                fill.setColor(withAlpha(accent, mine ? 0x66 : 0x3D));
+                fill.setColor(withAlpha(accent, strong ? 0x66 : 0x3D));
                 bar(canvas, left, t, left + Math.max(2 * radius, (right - left) * fraction), b, first, last);
             }
         }

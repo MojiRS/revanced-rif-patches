@@ -29,8 +29,9 @@ Shows images, GIFs, videos and tables in comments and text posts inline.
 
 **Polls**
 
-- rif doesn't know Reddit polls: a poll post showed only its text and a "View Poll" link, which opened rif's browser and bounced straight back to the post. Now the post's page shows the poll under its text: the options, the number of votes and when it ends (or that it has ended). Once Reddit shares the results (the poll has ended, or you voted), each option also shows its percentage, vote count and a bar, and your own vote is in bold with a ✓. While the poll is open, a last line reads "Open in browser to vote/show results".
+- rif doesn't know Reddit polls: a poll post showed only its text and a "View Poll" link, which opened rif's browser and bounced straight back to the post. Now the post's page shows the poll under its text: the number of votes, when it ends (or that it has ended) and an empty bar per option. Once Reddit shares the results (the poll has ended, or you voted), each bar fills, with the option's percentage and vote count, and your own vote gets a ✓. Once the poll has ended, the winning option (or options, on a tie) is in bold with a stronger bar. While the poll is open and you haven't voted, a last line reads "Tap to vote (open in browser)".
 - Read-only: voting isn't possible from rif. Tap the poll to open it in your default browser (never rif's own, which would bounce back to the post), to vote or see the results there. Back in rif, the poll is loaded again, so your vote shows.
+- The browser opens the post at `reddit.com/R/<subreddit>/comments/<id>/`: Reddit's own `/poll/` link redirects to a post address rif claims, and browsers such as Firefox hand that back to rif. This relies on Reddit serving the capitalised `/R/` address (checked November 2026).
 - The "View Poll" link is hidden while the poll shows (setting *Hide poll links*). Off: it reads "View Poll in Browser" and opens the poll in the browser too. If the poll can't be loaded, the link stays.
 - One small request per poll post, made when its page opens (never in the feed), and reused for a couple of minutes. With Fix share links, a poll link anywhere else (in a comment, another post) opens the poll's post.
 - Always on, no setting.
@@ -98,7 +99,7 @@ How it works: rif puts the YouTube player library's control overlay over the emb
 
 Opens Reddit share links (reddit.com/r/…/s/…) directly in rif instead of bouncing through the browser, and fixes reddit.com/media image links and poll links.
 
-Poll posts end with a "View Poll" link (`reddit.com/poll/…`) that rif opens in its browser, which Reddit sends back to the post, opening it a second time. On the poll's own post it now opens in your default browser instead (Inline comment images shows the poll there and handles its own link); from anywhere else it opens the post. If you've chosen the external browser for such links ("Prefer external browser" or "External browser URLs"), they still open there.
+Poll posts end with a "View Poll" link (`reddit.com/poll/…`) that rif opens in its browser, which Reddit sends back to the post, opening it a second time. On the poll's own post it now opens in your default browser instead (Inline comment images shows the poll there and handles its own link); from anywhere else it opens the post. If you've chosen the external browser for such links ("Prefer external browser" or "External browser URLs"), they still open there, at the same address as a tap on the poll (Inline comment images, Polls), so the browser doesn't hand them back to rif.
 
 `reddit.com/media?url=…` links wrap an image. rif mistakes them for a link to the post with the id `media`, an unrelated r/funny post, so the image never opens. This patch opens the wrapped link instead.
 

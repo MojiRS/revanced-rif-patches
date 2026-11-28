@@ -18,7 +18,7 @@ import java.util.regex.Pattern;
  * <p>What Reddit returns (2026-11-27, rif's OAuth client): options with {@code text} and {@code id};
  * {@code vote_count} per option only once the poll has ended or the user has voted;
  * {@code total_vote_count}; {@code voting_end_timestamp} in ms; {@code user_selection} (an option
- * id, or null).
+ * id, or null). The post's {@code subreddit} is kept for {@link #browserUrl}.
  */
 final class PollModel {
 
@@ -46,12 +46,36 @@ final class PollModel {
     final long endMs;
     /** The option id the user voted for, or null. */
     final String userSelection;
+    /** The post's subreddit (from the post JSON), or null. */
+    final String subreddit;
 
     PollModel(List<Option> options, long total, long endMs, String userSelection) {
+        this(options, total, endMs, userSelection, null);
+    }
+
+    PollModel(List<Option> options, long total, long endMs, String userSelection, String subreddit) {
         this.options = Collections.unmodifiableList(options);
         this.total = total;
         this.endMs = endMs;
         this.userSelection = userSelection;
+        this.subreddit = subreddit;
+    }
+
+    /** A subreddit name as it may appear in a URL path (also u_name profile subreddits). */
+    private static final Pattern SUBREDDIT = Pattern.compile("[A-Za-z0-9_-]{2,30}");
+
+    /**
+     * The URL that opens poll [id]'s post in a browser. Not reddit.com/poll/{id}: Reddit redirects
+     * that to /comments/{id}, and Firefox (unlike Chrome) hands a redirect, or even a direct
+     * load, to a reddit.com URL rif claims back to rif ("Open links in apps"), a loop. rif's
+     * intent filters claim the path prefixes /r/ and /comments/ case-sensitively, so
+     * /R/{sub}/comments/{id}/ resolves to no app; Reddit serves the post there (any sub, even a
+     * wrong one, lands on the right post) and fixes the URL client-side, with no new load.
+     * Depends on Reddit's behaviour (checked 2026-11-28, Firefox 161 and Chrome).
+     */
+    static String browserUrl(String id, String subreddit) {
+        String sub = subreddit != null && SUBREDDIT.matcher(subreddit).matches() ? subreddit : "all";
+        return "https://www.reddit.com/R/" + sub + "/comments/" + id + "/";
     }
 
     /** The post id of a poll link, or null if [url] isn't one. */
@@ -77,15 +101,18 @@ final class PollModel {
             if (json == null) return null;
             String s = json.trim();
             JSONObject poll;
+            String sub = null;
             if (s.startsWith("[")) {
                 JSONObject post = new JSONArray(s).getJSONObject(0).getJSONObject("data")
                         .getJSONArray("children").getJSONObject(0).getJSONObject("data");
                 poll = post.optJSONObject("poll_data");
+                sub = post.isNull("subreddit") ? null : post.optString("subreddit", null);
             } else {
                 poll = new JSONObject(s);
                 if (poll.has("poll_data")) poll = poll.optJSONObject("poll_data");
             }
-            return poll == null ? null : fromPollData(poll);
+            PollModel m = poll == null ? null : fromPollData(poll);
+            return m == null || sub == null ? m : new PollModel(m.options, m.total, m.endMs, m.userSelection, sub);
         } catch (Exception e) {
             return null;
         }
@@ -144,11 +171,20 @@ final class PollModel {
         return endMs > 0 && endMs <= nowMs;
     }
 
-    static final String FOOTER = "Open in browser to vote/show results";
+    // Not shown once the user voted: Reddit then returns the counts, so the results show.
+    static final String FOOTER = "Tap to vote (open in browser)";
 
-    /** The block's last line while the poll is open (also with results shown); null once it ended. */
+    /** The block's last line while the poll is open and the user hasn't voted; else null. */
     String footer(long nowMs) {
-        return ended(nowMs) ? null : FOOTER;
+        return ended(nowMs) || userSelection != null ? null : FOOTER;
+    }
+
+    /**
+     * True if [o] is shown bold with the stronger bar: only once the poll has ended, for the
+     * winning option (ties: all of them). Never while it's open, even with results shown.
+     */
+    boolean emphasized(Option o, long nowMs) {
+        return ended(nowMs) && leads(o);
     }
 
     /** Reddit's "View Poll" link text, with "Hide poll links" off (the link opens the browser). */

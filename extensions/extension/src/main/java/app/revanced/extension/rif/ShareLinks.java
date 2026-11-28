@@ -161,16 +161,18 @@ public final class ShareLinks {
     /**
      * A poll link (reddit.com/poll/{post id}, the "View Poll" link Reddit appends to a poll
      * post's text). rif would open it in its browser, which Reddit redirects back to the post.
-     * Links rif would open externally go there as before. On the poll's own post page (rif's
-     * link, before the poll block replaces it, or if its fetch failed; or a link to it in one of
-     * its comments) it opens in the default browser, like a tap on the block. Anywhere else it
-     * opens the post, which shows the block.
+     * Links rif would open externally ("Prefer external browser", "External browser URLs"), and
+     * on the poll's own post page (rif's link, before the poll block replaces it, or if its fetch
+     * failed; or a link to it in one of its comments), open in the default browser like a tap on
+     * the block, at a URL Firefox won't hand back to rif (rif's own external open of /poll/ would
+     * loop there). Anywhere else it opens the post, which shows the block.
      */
     private static boolean interceptPoll(String url, String pollId, String p1, Object p2, String p3,
                                          String p4, boolean p5, Object p6, Object p7, Context ctx,
                                          Object p9) {
+        boolean external;
         try {
-            if (opensExternally(Uri.parse(url), p2, null)) return false;
+            external = opensExternally(Uri.parse(url), p2, null);
         } catch (Throwable t) {
             Log.w(TAG, "poll link: external check failed", t);
             return false;
@@ -180,7 +182,7 @@ public final class ShareLinks {
             if (ctx == null) return false;
         }
         final Context context = ctx;
-        if (Polls.onPostPage(pollId)) {
+        if (external || Polls.onPostPage(pollId)) {
             MAIN.post(() -> Polls.openInBrowser(context, pollId));
             return true;
         }
