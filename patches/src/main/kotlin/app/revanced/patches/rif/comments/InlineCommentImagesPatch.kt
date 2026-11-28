@@ -46,8 +46,6 @@ val inlineImagesSettingsResourcePatch = resourcePatch(
                     summary = "Hide image links that are just a URL without link text.",
                 ),
             )
-            // Poll blocks are always on (no dependency); off, the link reads "View Poll in Browser".
-            category.appendChild(doc.checkBoxPreference("INLINE_POLLS_HIDE_URL", "Hide poll links"))
             category.appendChild(
                 doc.checkBoxPreference(
                     "INLINE_ALBUM_NAVIGATION",
@@ -80,6 +78,8 @@ val inlineImagesSettingsResourcePatch = resourcePatch(
                     summary = "Always show a progress bar below inline videos.",
                 ),
             )
+            // Poll blocks are always on (no dependency); off, the link reads "View Poll in Browser".
+            category.appendChild(doc.checkBoxPreference("INLINE_POLLS_HIDE_URL", "Hide poll links"))
             // Size settings: enabled while images or videos is on (RevancedSettingsFragment
             // greys them live; a preference has only one dependency key).
             category.appendChild(doc.checkBoxPreference("INLINE_IMAGES_SCALE", "Scale inline media to fit"))

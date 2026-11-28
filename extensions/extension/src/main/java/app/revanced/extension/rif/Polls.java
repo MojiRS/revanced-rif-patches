@@ -1,5 +1,6 @@
 package app.revanced.extension.rif;
 
+import android.annotation.TargetApi;
 import android.app.Activity;
 import android.app.Application;
 import android.content.ActivityNotFoundException;
@@ -14,6 +15,7 @@ import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.RectF;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -23,6 +25,7 @@ import android.text.Selection;
 import android.text.Spannable;
 import android.text.SpannableStringBuilder;
 import android.text.Spanned;
+import android.text.StaticLayout;
 import android.text.TextPaint;
 import android.text.style.ForegroundColorSpan;
 import android.text.style.LeadingMarginSpan;
@@ -569,6 +572,8 @@ public final class Polls {
         int column = (int) Math.ceil(paint.measureText("100%") + 8 * density);
         // Text inside a bar starts a little in from its rounded edge.
         int inset = Math.round(6 * density);
+        // Every option line gets at least the height of a line with the ✓, which can come from a taller fallback font.
+        int[] check = checkLineMetrics(tv);
         for (PollModel.Option o : poll.options) {
             sb.append('\n');
             int start = sb.length();
@@ -590,7 +595,8 @@ public final class Polls {
             sb.setSpan(new Ours.Tab(column), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
             sb.setSpan(new Ours.Indent(inset, inset + column), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
             sb.setSpan(new OptionSpan(counts ? poll.fraction(o) : 0f, strong, textColor, accent,
-                    Math.round(3 * density), 4 * density), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                    Math.round(3 * density), 4 * density, check[0], check[1]), start, end,
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         }
         String footer = poll.footer(now);
         if (footer != null) {
@@ -598,6 +604,35 @@ public final class Polls {
             secondaryLine(sb, footer, secondary);
         }
         return sb;
+    }
+
+    /**
+     * Ascent and descent of a line holding "x ✓" as [tv]'s layout measures it: from Android 9 its fallback line
+     * spacing can make that line taller than the text font's own metrics.
+     */
+    static int[] checkLineMetrics(TextView tv) {
+        Paint.FontMetricsInt fm = tv.getPaint().getFontMetricsInt();
+        int[] m = {fm.ascent, fm.descent};
+        if (Build.VERSION.SDK_INT >= 28) {
+            try {
+                checkLineMetrics28(tv, m);
+            } catch (Throwable t) {
+                Log.w(TAG, "check line metrics", t);
+            }
+        }
+        return m;
+    }
+
+    @TargetApi(28)
+    private static void checkLineMetrics28(TextView tv, int[] m) {
+        String s = "x ✓";
+        StaticLayout l = StaticLayout.Builder.obtain(s, 0, s.length(), tv.getPaint(), 1 << 14)
+                .setIncludePad(false)
+                .setLineSpacing(0f, 1f)
+                .setUseLineSpacingFromFallbacks(tv.isFallbackLineSpacing())
+                .build();
+        m[0] = Math.min(m[0], l.getLineAscent(0));
+        m[1] = Math.max(m[1], l.getLineDescent(0));
     }
 
     /** Appends a line styled like the header: secondary colour, a little smaller. */
@@ -708,13 +743,20 @@ public final class Polls {
         private final Path path = new Path();
         private final float[] radii = new float[8];
 
-        OptionSpan(float fraction, boolean strong, int textColor, int accent, int pad, float radius) {
+        private final int minAscent;
+        private final int minDescent;
+
+        /** [minAscent]/[minDescent]: every line gets at least these metrics (a line with the ✓, [checkLineMetrics]). */
+        OptionSpan(float fraction, boolean strong, int textColor, int accent, int pad, float radius,
+                   int minAscent, int minDescent) {
             this.fraction = fraction;
             this.strong = strong;
             this.textColor = textColor;
             this.accent = accent;
             this.pad = pad;
             this.radius = radius;
+            this.minAscent = minAscent;
+            this.minDescent = minDescent;
         }
 
         @Override
@@ -722,6 +764,10 @@ public final class Polls {
                                  Paint.FontMetricsInt fm) {
             if (!(text instanceof Spanned)) return;
             Spanned sp = (Spanned) text;
+            // Same height for every option line, with or without the ✓ (ascent is negative). top/bottom too: they
+            // replace ascent/descent on the text's first and last line, which made a poll's last option taller.
+            fm.ascent = fm.top = Math.min(fm.ascent, minAscent);
+            fm.descent = fm.bottom = Math.max(fm.descent, minDescent);
             if (start <= sp.getSpanStart(this)) {
                 fm.ascent -= pad;
                 fm.top -= pad;
