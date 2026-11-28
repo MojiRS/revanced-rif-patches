@@ -14,6 +14,13 @@ Removes AppLovin native feed ads, banner ads, and image/album-viewer ads, so no 
 - No-ops the native-ad, banner and album-viewer ad loaders.
 - Keeps the album viewer from wrapping its images in the ad-inserting adapter.
 
+While *Block ads* is on, it also tidies rif's own ad settings:
+
+- Hides *Ads & pro features* and *Hide ads (reddit premium)* in General settings, and *Revoke data consent for ads* in Security & privacy (also from settings search). *Ads & pro features* is rif's whole pro switch (tablet layout, moderator features, themes, history sync), so it is kept on.
+- Drops "Requires ads enabled" from the summaries of rif's pro settings, which would point at a hidden switch.
+- Removes the empty strip a bottom-ad theme leaves at the bottom of the screen.
+- Switching *Block ads* on turns the pro switch back on at once. Switching it off later only brings rif's ads back: the pro switch stays on, and rif's ad rows show again.
+
 Setting: *Block ads*.
 
 ## Inline comment images
@@ -23,7 +30,7 @@ Shows images, GIFs, videos and tables in comments and text posts inline.
 **Tables**
 
 - A markdown table is drawn in place of rif's "[View formatted table]" link and its plain-text cells: thin borders, bold header row, left/center/right alignment, links in cells (tap one to open it like any link). Columns share the comment's width and long text wraps. Tap the table anywhere else to open rif's zoomable popup.
-- Images, videos and tables are switched on and off independently. Setting: *Inline tables*.
+- Images, videos and tables are switched on and off independently. Setting: *Inline tables*. (Earlier versions needed Inline images for videos: on the first start after updating, Inline images off also switches Inline videos off, once.) With images off, an imgur album is only fetched, and shows a placeholder, if Inline videos is on.
 
 **Images**
 
@@ -189,7 +196,7 @@ Makes rif's Random button (the sidebar's subreddit picker) open a random subredd
 
 Each tap sends one plain request to redditrand (your IP address, like any web request; no Reddit token, account or cookies). If redditrand is down or its reply can't be read, nothing is replaced and rif shows its usual "Banned subreddit" error. There is no retry. Links to `/r/randnsfw` use redditrand's NSFW pick.
 
-Setting: **Show randnsfw in sidebar** (Settings → rif patches → Random subreddit; off by default) adds a `randnsfw` row to the subreddit picker, right below Random. It hides along with Random when you switch Random off in the picker's own settings. It opens a random NSFW subreddit the same way. It shows whatever rif's over-18 setting says; a change shows the next time the picker refreshes.
+Setting: **Show randnsfw in sidebar** (Settings → rif patches → Random subreddit; off by default) adds a `randnsfw` row to the subreddit picker, right below Random. It hides along with Random when you switch Random off in the picker's own settings. It opens a random NSFW subreddit the same way. The row doesn't follow rif's NSFW filtering setting (Content filters): with filtering on, the subreddit it opens may not load. A change shows the next time the picker refreshes.
 
 How it works: rif's request base class runs every Reddit request's background step on a worker thread and reads the request URI from one field. A hook at the top of that step lets the extension look at the URI; if it is a listing of `r/random` or `r/randnsfw` (any sort), it makes a blocking request to redditrand (10 s timeout), reads the name from `{"url":"/r/<name>/"}`, and rewrites the URI to `r/<name>` before rif builds its request. The field's `final` flag is removed so it can be replaced. rif's own random mode handles the rest, so refreshing Random picks another subreddit, as it used to. For the row, two hooks in the picker's adapter (found by their shape: the row-id list refill and the label setter): the first adds row id 5 to the list when the setting is on, the second gives id 5 the label `randnsfw`. rif opens `/r/<row text>` on a tap, so the request hook above does the rest.
 

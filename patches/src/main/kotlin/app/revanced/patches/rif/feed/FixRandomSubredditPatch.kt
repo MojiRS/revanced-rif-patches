@@ -2,6 +2,7 @@ package app.revanced.patches.rif.feed
 
 import app.revanced.patcher.extensions.InstructionExtensions.addInstructions
 import app.revanced.patcher.extensions.InstructionExtensions.instructions
+import app.revanced.patcher.extensions.InstructionExtensions.replaceInstruction
 import app.revanced.patcher.fingerprint
 import app.revanced.patcher.patch.BytecodePatchContext
 import app.revanced.patcher.patch.PatchException
@@ -88,7 +89,7 @@ private fun BytecodePatchContext.addPickerRow() {
     val notify = rowCode.lastIndex - 1
     val notifyCall = rowCode.getOrNull(notify) as? FiveRegisterInstruction
     if (rowCode.last().opcode != Opcode.RETURN_VOID || notifyCall == null ||
-        notifyCall.opcode != Opcode.INVOKE_VIRTUAL || notifyCall.registerCount != 1 ||
+        notifyCall.opcode != Opcode.INVOKE_VIRTUAL || notifyCall.registerCount != 1 || notifyCall.registerC == 0 ||
         ((notifyCall as ReferenceInstruction).reference as MethodReference).let { it.returnType != "V" || it.parameterTypes.isNotEmpty() }
     ) {
         throw PatchException("notifyDataSetChanged call not found at the end of ${rows.definingClass}->${rows.name}")
@@ -98,11 +99,19 @@ private fun BytecodePatchContext.addPickerRow() {
             ?.takeIf { f -> it.opcode == Opcode.IGET_OBJECT && f.type == "Ljava/util/ArrayList;" }
     } ?: throw PatchException("row id list not found in ${rows.definingClass}->${rows.name}")
     requireScratchRegister(rows)
-    rows.addInstructions(
+    // The notify call is a branch target (the mod-row check jumps straight to it), and
+    // instructions added at an index stay before the label, so a jump would skip them. Replace
+    // the call with our first instruction (the label stays on it) and re-add the call after ours.
+    val notifyRef = (notifyCall as ReferenceInstruction).reference as MethodReference
+    rows.replaceInstruction(
         notify,
+        "iget-object v0, p0, ${listField.definingClass}->${listField.name}:Ljava/util/ArrayList;",
+    )
+    rows.addInstructions(
+        notify + 1,
         """
-            iget-object v0, p0, ${listField.definingClass}->${listField.name}:Ljava/util/ArrayList;
             invoke-static { v0 }, $EXTENSION->addPickerRow(Ljava/util/ArrayList;)V
+            invoke-virtual { v${notifyCall.registerC} }, ${notifyRef.definingClass}->${notifyRef.name}()V
         """,
     )
 

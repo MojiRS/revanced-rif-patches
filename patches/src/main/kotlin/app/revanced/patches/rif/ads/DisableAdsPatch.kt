@@ -107,6 +107,17 @@ internal val generalSettingsPostInflateFingerprint = fingerprint {
     }
 }
 
+// Security & privacy settings' onViewCreated(View, Bundle) (free j3): its own override, which runs
+// the base's onViewCreated and then its two private setups. Matched by shape in the kept-name class.
+internal val securityPrivacyViewCreatedFingerprint = fingerprint {
+    custom { method, classDef ->
+        classDef.type == "Lcom/andrewshu/android/reddit/settings/SecurityPrivacySettingsFragment;" &&
+            !AccessFlags.STATIC.isSet(method.accessFlags) &&
+            method.returnType == "V" &&
+            method.parameterTypes.toList() == listOf("Landroid/view/View;", "Landroid/os/Bundle;")
+    }
+}
+
 // The settings search task's doInBackground (r4.d.h): (String[])List, in the class that parses
 // each screen's XML (a (Context, XmlResourceParser, String)String helper). Matched by shape.
 internal val settingsSearchFingerprint = fingerprint {
@@ -267,7 +278,8 @@ val disableAdsPatch = bytecodePatch(
 
         // Rif's own ad switches while Block ads is on (AdSettings): keep ADS_ENABLED (rif's pro
         // flag) true from launch, hide "Ads & pro features" and "Hide ads (reddit premium)" in
-        // General settings, and keep both out of settings search.
+        // General settings and "Revoke data consent for ads" in Security & privacy, and keep them
+        // out of settings search.
         // Index 0 of onCreate: p0 is `this` (a Context); the helper also runs Settings.init, so
         // the order against revancedSettingsPatch's own insert doesn't matter.
         adsApplicationOnCreateFingerprint.method.addInstructions(
@@ -279,6 +291,13 @@ val disableAdsPatch = bytecodePatch(
         generalSettingsPostInflateFingerprint.method.addInstructions(
             0,
             "invoke-static { p0 }, $ADS_SETTINGS->hideAdRows(Ljava/lang/Object;)V",
+        )
+
+        // Start of Security & privacy's onViewCreated (p0 = the fragment; the preferences are
+        // inflated in onCreate, so the row can be found already): hide "Revoke data consent for ads".
+        securityPrivacyViewCreatedFingerprint.method.addInstructions(
+            0,
+            "invoke-static { p0 }, $ADS_SETTINGS->hideRevokeConsentRow(Ljava/lang/Object;)V",
         )
 
         // Just before the final return-object (the result ArrayList) of the search task.

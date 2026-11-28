@@ -19,14 +19,14 @@ import r4.c;
  * Everything here does nothing when Block ads is off.
  *
  * Names are free's (R8-renamed androidx members via stubs): findPreference {@code b0}, setVisible
- * {@code C0}, setSummary {@code y0}, isChecked {@code I0}, setChecked {@code J0}.
+ * {@code C0}, isChecked {@code I0}, setChecked {@code J0}.
  */
 public final class AdSettings {
 
     private static final String TAG = "RifAdSettings";
     private static final String ADS_ENABLED = "ADS_ENABLED";
     private static final String GOLD_BLOCK_ADS = "GOLD_BLOCK_ADS";
-    private static final String MODERATOR_ENABLED = "MODERATOR_ENABLED";
+    private static final String REVOKE_ADS_GDPR_CONSENT = "REVOKE_ADS_GDPR_CONSENT";
 
     private AdSettings() {}
 
@@ -38,21 +38,36 @@ public final class AdSettings {
         try {
             Settings.init(context);
             if (!Settings.blockAds()) return;
-            SharedPreferences p = context.getSharedPreferences("settings", Context.MODE_PRIVATE);
-            if (!p.getBoolean(ADS_ENABLED, true)) {
-                p.edit().putBoolean(ADS_ENABLED, true).apply();
-                Log.w(TAG, "ADS_ENABLED was off: set on (Block ads keeps pro features)");
-            }
+            setProEnabled(context.getSharedPreferences("settings", Context.MODE_PRIVATE));
         } catch (Throwable t) {
             Log.w(TAG, "keepProEnabled failed", t);
         }
     }
 
     /**
+     * Block ads was just switched on in our settings screen: store ADS_ENABLED true now, so pro
+     * features (and the other screens' pro rows) are back without waiting for a restart or a visit
+     * to General settings. rif reloads its in-memory pro flag from the stored value when its
+     * settings activity pauses.
+     */
+    static void blockAdsSwitchedOn(SharedPreferences p) {
+        try {
+            if (p != null && Settings.blockAds()) setProEnabled(p);
+        } catch (Throwable t) {
+            Log.w(TAG, "blockAdsSwitchedOn failed", t);
+        }
+    }
+
+    /** Writes ADS_ENABLED true unless it's stored true (a never-written key is not trusted to read as true everywhere). */
+    private static void setProEnabled(SharedPreferences p) {
+        if (!p.getBoolean(ADS_ENABLED, false)) p.edit().putBoolean(ADS_ENABLED, true).apply();
+    }
+
+    /**
      * Hook in GeneralSettingsFragment's post-inflate method; {@code fragment} is that fragment.
      * Hides both ad rows (setVisible, not removal: Moderator features and Hide ads depend on
-     * ADS_ENABLED by key and a missing key crashes the screen), makes sure ADS_ENABLED is on, and
-     * drops Moderator features' "Requires ads enabled" summary.
+     * ADS_ENABLED by key and a missing key crashes the screen) and makes sure ADS_ENABLED is on.
+     * (Moderator features' "Requires ads enabled" summary is emptied in strings.xml by the patch.)
      */
     public static void hideAdRows(Object fragment) {
         try {
@@ -66,10 +81,23 @@ public final class AdSettings {
             if (ads != null) ads.C0(false);
             Preference gold = f.b0(GOLD_BLOCK_ADS);
             if (gold != null) gold.C0(false);
-            Preference moderator = f.b0(MODERATOR_ENABLED);
-            if (moderator != null) moderator.y0(null);
         } catch (Throwable t) {
             Log.w(TAG, "hideAdRows failed", t);
+        }
+    }
+
+    /**
+     * Hook at the start of SecurityPrivacySettingsFragment's onViewCreated (free); {@code fragment}
+     * is that fragment. Hides "Revoke data consent for ads" while Block ads is on (nothing to
+     * revoke: no ads load). setVisible, like the rows above.
+     */
+    public static void hideRevokeConsentRow(Object fragment) {
+        try {
+            if (!Settings.blockAds()) return;
+            Preference revoke = ((androidx.preference.i) fragment).b0(REVOKE_ADS_GDPR_CONSENT);
+            if (revoke != null) revoke.C0(false);
+        } catch (Throwable t) {
+            Log.w(TAG, "hideRevokeConsentRow failed", t);
         }
     }
 
@@ -85,7 +113,7 @@ public final class AdSettings {
                 Object o = it.next();
                 if (!(o instanceof c)) continue;
                 String key = ((c) o).a();
-                if (ADS_ENABLED.equals(key) || GOLD_BLOCK_ADS.equals(key)) it.remove();
+                if (ADS_ENABLED.equals(key) || GOLD_BLOCK_ADS.equals(key) || REVOKE_ADS_GDPR_CONSENT.equals(key)) it.remove();
             }
         } catch (Throwable t) {
             Log.w(TAG, "filterSearch failed", t);
