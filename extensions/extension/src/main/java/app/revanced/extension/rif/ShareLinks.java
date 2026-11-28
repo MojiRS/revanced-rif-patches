@@ -161,9 +161,10 @@ public final class ShareLinks {
     /**
      * A poll link (reddit.com/poll/{post id}, the "View Poll" link Reddit appends to a poll
      * post's text). rif would open it in its browser, which Reddit redirects back to the post.
-     * Links rif would open externally go there as before. Otherwise: scroll to the poll's block
-     * if that post is on screen, or open the post (which shows the block). If the block can't
-     * be shown, rif's old behaviour.
+     * Links rif would open externally go there as before. On the poll's own post page (rif's
+     * link, before the poll block replaces it, or if its fetch failed; or a link to it in one of
+     * its comments) it opens in the default browser, like a tap on the block. Anywhere else it
+     * opens the post, which shows the block.
      */
     private static boolean interceptPoll(String url, String pollId, String p1, Object p2, String p3,
                                          String p4, boolean p5, Object p6, Object p7, Context ctx,
@@ -179,10 +180,10 @@ public final class ShareLinks {
             if (ctx == null) return false;
         }
         final Context context = ctx;
-        int r = Polls.onLinkTap(pollId,
-                () -> dispatchLater(url, url, p1, p2, p3, p4, p5, p6, p7, context, p9, true));
-        if (r == Polls.TAP_HANDLED) return true;
-        if (r == Polls.TAP_FAILED) return false;
+        if (Polls.onPostPage(pollId)) {
+            MAIN.post(() -> Polls.openInBrowser(context, pollId));
+            return true;
+        }
         dispatchLater("https://www.reddit.com/comments/" + pollId, url, p1, p2, p3, p4, p5, p6, p7,
                 context, p9, false);
         return true;

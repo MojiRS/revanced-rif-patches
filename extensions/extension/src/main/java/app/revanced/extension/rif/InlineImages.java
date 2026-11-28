@@ -170,8 +170,14 @@ public final class InlineImages {
                 break;
             case MotionEvent.ACTION_UP:
                 cancelImageLongPress(v);
+                float[] start = LAST_TOUCH.get(v);
                 LAST_TOUCH.put(v, new float[]{event.getX(), event.getY()});
-                if (LONG_PRESSED.remove(v) != null) event.setAction(MotionEvent.ACTION_CANCEL);
+                if (LONG_PRESSED.remove(v) != null) {
+                    event.setAction(MotionEvent.ACTION_CANCEL);
+                } else if (v instanceof TextView && Polls.onTap((TextView) v, start, event)) {
+                    // A tap on a poll block opened the browser: not also a tap on the text.
+                    event.setAction(MotionEvent.ACTION_CANCEL);
+                }
                 break;
             case MotionEvent.ACTION_CANCEL:
             case MotionEvent.ACTION_POINTER_DOWN:
@@ -820,15 +826,7 @@ public final class InlineImages {
                 if (sp.getSpans(0, sp.length(), FitImageSpan.class).length > 0 || InlineTables.has(sp)) {
                     // Image (and table) taps and long presses need the touch position (rif's
                     // body TextViews have no touch or long-click listeners of their own).
-                    if (Settings.inlineTablesOnly()) {
-                        // Another bundle's inline media may own the touch listener (Patcheddit's
-                        // sets one on bodies with media): record through a touch delegate instead.
-                        if (!(tv.getTouchDelegate() instanceof TouchRecorder)) {
-                            tv.setTouchDelegate(new TouchRecorder(tv));
-                        }
-                    } else {
-                        tv.setOnTouchListener(TOUCH_LISTENER);
-                    }
+                    trackTouches(tv);
                     tv.setOnLongClickListener(LONG_CLICK);
                     // Fit to the current width now (usually right, as rows are recycled
                     // between comments), and again whenever the width changes.
@@ -1076,6 +1074,19 @@ public final class InlineImages {
             } catch (Throwable t) {
                 Log.w(TAG, "image long press failed", t);
             }
+        }
+    }
+
+    /** Records [tv]'s touches (TOUCH_LISTENER): media, table and poll taps need the position. */
+    static void trackTouches(TextView tv) {
+        if (Settings.inlineTablesOnly()) {
+            // Another bundle's inline media may own the touch listener (Patcheddit's sets one on
+            // bodies with media): record through a touch delegate instead.
+            if (!(tv.getTouchDelegate() instanceof TouchRecorder)) {
+                tv.setTouchDelegate(new TouchRecorder(tv));
+            }
+        } else {
+            tv.setOnTouchListener(TOUCH_LISTENER);
         }
     }
 

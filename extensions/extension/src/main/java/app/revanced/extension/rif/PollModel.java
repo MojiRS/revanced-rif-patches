@@ -144,6 +144,18 @@ final class PollModel {
         return endMs > 0 && endMs <= nowMs;
     }
 
+    static final String FOOTER = "Open in browser to vote/show results";
+
+    /** The block's last line while the poll is open (also with results shown); null once it ended. */
+    String footer(long nowMs) {
+        return ended(nowMs) ? null : FOOTER;
+    }
+
+    /** Reddit's "View Poll" link text, with "Hide poll links" off (the link opens the browser). */
+    static String linkLabel(String text) {
+        return text != null && text.trim().equalsIgnoreCase("View Poll") ? "View Poll in Browser" : text;
+    }
+
     /** The denominator for percentages: the total, or the options' sum if the total is missing. */
     long countBase() {
         long sum = 0;

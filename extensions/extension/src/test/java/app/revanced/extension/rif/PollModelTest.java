@@ -94,6 +94,29 @@ public class PollModelTest {
     }
 
     @Test
+    public void footerOnlyWhileOpen() {
+        PollModel ended = PollModel.parse(ENDED);
+        assertNull(ended.footer(ended.endMs));
+        assertNull(ended.footer(ended.endMs + 1));
+        PollModel open = PollModel.parse(OPEN);
+        assertEquals("Open in browser to vote/show results", open.footer(open.endMs - 1));
+        // Results shown while open (author, or after voting): the footer stays.
+        PollModel openWithCounts = new PollModel(ended.options, 7240, open.endMs, "32590832");
+        assertTrue(openWithCounts.hasCounts());
+        assertEquals(PollModel.FOOTER, openWithCounts.footer(open.endMs - 1));
+        // Unknown end time: treated as open.
+        assertEquals(PollModel.FOOTER, new PollModel(open.options, 0, 0, null).footer(123));
+    }
+
+    @Test
+    public void linkLabel() {
+        assertEquals("View Poll in Browser", PollModel.linkLabel("View Poll"));
+        assertEquals("View Poll in Browser", PollModel.linkLabel(" view poll "));
+        assertEquals("my poll", PollModel.linkLabel("my poll"));
+        assertNull(PollModel.linkLabel(null));
+    }
+
+    @Test
     public void endText() {
         long now = 1_000_000_000L;
         assertNull(PollModel.endText(0, now));

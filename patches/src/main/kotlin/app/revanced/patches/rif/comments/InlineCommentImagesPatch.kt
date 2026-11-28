@@ -46,6 +46,8 @@ val inlineImagesSettingsResourcePatch = resourcePatch(
                     summary = "Hide image links that are just a URL without link text.",
                 ),
             )
+            // Poll blocks are always on (no dependency); off, the link reads "View Poll in Browser".
+            category.appendChild(doc.checkBoxPreference("INLINE_POLLS_HIDE_URL", "Hide poll links"))
             category.appendChild(
                 doc.checkBoxPreference(
                     "INLINE_ALBUM_NAVIGATION",

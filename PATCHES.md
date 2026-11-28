@@ -29,9 +29,10 @@ Shows images, GIFs, videos and tables in comments and text posts inline.
 
 **Polls**
 
-- rif doesn't know Reddit polls: a poll post showed only its text and a "View Poll" link, which opened rif's browser and bounced straight back to the post. Now the post's page shows the poll under its text: the options, the number of votes and when it ends (or that it has ended). Once Reddit shares the results (the poll has ended, or you voted on reddit.com), each option also shows its percentage, vote count and a bar, and your own vote is in bold with a ✓.
-- Read-only: voting isn't possible from rif.
-- One small request per poll post, made when its page opens (never in the feed), and reused for a couple of minutes. With Fix share links, tapping "View Poll" stays on the post (or opens it, from elsewhere) instead of going through the browser.
+- rif doesn't know Reddit polls: a poll post showed only its text and a "View Poll" link, which opened rif's browser and bounced straight back to the post. Now the post's page shows the poll under its text: the options, the number of votes and when it ends (or that it has ended). Once Reddit shares the results (the poll has ended, or you voted), each option also shows its percentage, vote count and a bar, and your own vote is in bold with a ✓. While the poll is open, a last line reads "Open in browser to vote/show results".
+- Read-only: voting isn't possible from rif. Tap the poll to open it in your default browser (never rif's own, which would bounce back to the post), to vote or see the results there. Back in rif, the poll is loaded again, so your vote shows.
+- The "View Poll" link is hidden while the poll shows (setting *Hide poll links*). Off: it reads "View Poll in Browser" and opens the poll in the browser too. If the poll can't be loaded, the link stays.
+- One small request per poll post, made when its page opens (never in the feed), and reused for a couple of minutes. With Fix share links, a poll link anywhere else (in a comment, another post) opens the poll's post.
 - Always on, no setting.
 
 **Tables**
@@ -55,7 +56,7 @@ Shows images, GIFs, videos and tables in comments and text posts inline.
 - Tap a video for controls like rif's own player's, built from rif's own icons and colors: back to start, play/pause, repeat (on by default), sound, seek, and full screen. Full screen opens rif's player at the same position, repeat and sound settings.
 - The video is drawn by a `TextureView` laid over the space the text reserves for it, in the frame rif wraps comment and post bodies in. Players are released while scrolled away or while rif is hidden (e.g. the phone is locked), and restored where they were.
 
-Settings, in order: *Inline images*, *Hide bare image links*, *Inline album navigation* (off: no arrows, tapping an album opens it; needs Inline images), *Inline videos*, *Autoplay inline videos*, *Hide bare video links*, *Video progress bar*, *Scale inline media to fit*, *Limit inline media width* and *Limit inline media height* (off by default), each with a *Max width (% of screen)* / *Max height (% of screen)* slider, *Inline tables*, *Long press media to select comment* with a *Long press delay* slider. Images, videos and tables are independent: with images off, video links still play inline and image links stay plain. The size settings are greyed out unless images or videos is on, and long press unless images, videos or tables is on (updated live, by `RevancedSettingsFragment`).
+Settings, in order: *Inline images*, *Hide bare image links*, *Hide poll links*, *Inline album navigation* (off: no arrows, tapping an album opens it; needs Inline images), *Inline videos*, *Autoplay inline videos*, *Hide bare video links*, *Video progress bar*, *Scale inline media to fit*, *Limit inline media width* and *Limit inline media height* (off by default), each with a *Max width (% of screen)* / *Max height (% of screen)* slider, *Inline tables*, *Long press media to select comment* with a *Long press delay* slider. Images, videos and tables are independent: with images off, video links still play inline and image links stay plain. The size settings are greyed out unless images or videos is on, and long press unless images, videos or tables is on (updated live, by `RevancedSettingsFragment`).
 
 How it works: images are fetched and embedded on rif's background thread, when it renders a comment or post body (before it's shown). A hook after each body `setText` then starts GIFs and adds video overlays on the main thread.
 
@@ -97,7 +98,7 @@ How it works: rif puts the YouTube player library's control overlay over the emb
 
 Opens Reddit share links (reddit.com/r/…/s/…) directly in rif instead of bouncing through the browser, and fixes reddit.com/media image links and poll links.
 
-Poll posts end with a "View Poll" link (`reddit.com/poll/…`) that rif opens in its browser, which Reddit sends back to the post, opening it a second time. Tapping it now stays on the post, where Inline comment images shows the poll, or opens the post from anywhere else. If you've chosen the external browser for such links ("Prefer external browser" or "External browser URLs"), they still open there; if the poll couldn't be loaded, rif behaves as before.
+Poll posts end with a "View Poll" link (`reddit.com/poll/…`) that rif opens in its browser, which Reddit sends back to the post, opening it a second time. On the poll's own post it now opens in your default browser instead (Inline comment images shows the poll there and handles its own link); from anywhere else it opens the post. If you've chosen the external browser for such links ("Prefer external browser" or "External browser URLs"), they still open there.
 
 `reddit.com/media?url=…` links wrap an image. rif mistakes them for a link to the post with the id `media`, an unrelated r/funny post, so the image never opens. This patch opens the wrapped link instead.
 
