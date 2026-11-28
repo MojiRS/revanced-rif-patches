@@ -1,7 +1,5 @@
 package app.revanced.extension.rif;
 
-import android.accounts.Account;
-import android.accounts.AccountManager;
 import android.annotation.TargetApi;
 import android.content.ContentResolver;
 import android.content.Context;
@@ -71,7 +69,6 @@ public final class ImageHosting {
 
     private static final String TAG = "RifImageHosting";
     private static final String API = "https://oauth.reddit.com";
-    private static final String FALLBACK_VERSION = "5.6.22";
     private static final Charset UTF8 = Charset.forName("UTF-8");
 
     /** Largest still image sent as is (bytes); larger ones are resized to this. */
@@ -1074,7 +1071,7 @@ public final class ImageHosting {
         } catch (java.io.UnsupportedEncodingException e) {
             throw new IllegalStateException(e);
         }
-        Resp lease = authed(ctx, API + "/api/media/asset.json", form.getBytes(UTF8));
+        RedditApi.Resp lease = authed(ctx, API + "/api/media/asset.json", form.getBytes(UTF8));
         if (lease.code != 200) {
             Log.w(TAG, "asset request " + lease.code + ": " + lease.body);
             throw new UploadException("Reddit upload failed (HTTP " + lease.code + ").");
@@ -1166,89 +1163,30 @@ public final class ImageHosting {
 
     // ------------------------------------------------------------- requests
 
-    static final class Resp {
-        int code;
-        String body;
-    }
-
-    /** One request to oauth.reddit.com with the user's token; a 401/403 gets a fresh token and one retry. */
-    static Resp authed(Context ctx, String url, byte[] form) throws UploadException {
-        String token = token(ctx);
-        Resp r = call(ctx, url, form, token);
-        if (r.code == 401 || r.code == 403) {
-            try {
-                AccountManager.get(ctx).invalidateAuthToken("com.reddit", token);
-            } catch (Throwable ignored) {
-            }
-            token = token(ctx);
-            r = call(ctx, url, form, token);
-        }
-        return r;
-    }
-
-    private static Resp call(Context ctx, String url, byte[] form, String token) throws UploadException {
-        HttpURLConnection conn = null;
+    /**
+     * One request to oauth.reddit.com with the user's token ({@link RedditApi#authed}); a 401/403
+     * gets a fresh token and one retry. Failures become the upload errors shown to the user.
+     */
+    static RedditApi.Resp authed(Context ctx, String url, byte[] form) throws UploadException {
         try {
-            conn = (HttpURLConnection) new URL(url).openConnection();
-            conn.setConnectTimeout(15000);
-            conn.setReadTimeout(30000);
-            conn.setRequestProperty("User-Agent", userAgent(ctx));
-            conn.setRequestProperty("Authorization", "bearer " + token);
-            if (form != null) {
-                conn.setDoOutput(true);
-                conn.setRequestMethod("POST");
-                conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded");
-                OutputStream out = conn.getOutputStream();
-                out.write(form);
-                out.close();
-            }
-            Resp r = new Resp();
-            r.code = conn.getResponseCode();
-            r.body = readText(r.code >= 400 ? conn.getErrorStream() : conn.getInputStream());
-            return r;
+            return RedditApi.authed(ctx, url, form, 15000, 30000);
+        } catch (RedditApi.LoggedOut e) {
+            throw new UploadException("Log in to upload media.");
+        } catch (RedditApi.NoToken e) {
+            throw new UploadException("Reddit sign-in failed. Open rif and log in again.");
         } catch (IOException e) {
             Log.w(TAG, "request failed: " + e);
             throw new RetryableException("Reddit upload failed (network error).");
-        } finally {
-            if (conn != null) conn.disconnect();
         }
     }
 
     private static String userName(Context ctx) {
-        return ctx.getSharedPreferences("credentials", Context.MODE_PRIVATE).getString("username", null);
+        return RedditApi.userName(ctx);
     }
-
-    /** rif's own sign-in token for the logged-in account (blocking: background threads only). */
-    private static String token(Context ctx) throws UploadException {
-        String name = userName(ctx);
-        if (name == null || name.length() == 0) throw new UploadException("Log in to upload media.");
-        try {
-            String t = AccountManager.get(ctx).blockingGetAuthToken(new Account(name, "com.reddit"), "redditisfun_oauth2", false);
-            if (t != null && t.length() > 0) return t;
-        } catch (Exception e) {
-            Log.w(TAG, "token failed: " + e);
-        }
-        throw new UploadException("Reddit sign-in failed. Open rif and log in again.");
-    }
-
-    /** rif's own user agent (what its Reddit requests send, after any Spoof client patch); set by the patch. */
-    private static volatile String rifUserAgent;
 
     /** Called by the patched uploader with the result of rif's user-agent method. */
     public static void setUserAgent(String ua) {
-        if (ua != null && ua.length() > 0) rifUserAgent = ua;
-    }
-
-    private static String userAgent(Context ctx) {
-        String set = rifUserAgent;
-        if (set != null) return set;
-        String v = FALLBACK_VERSION;
-        try {
-            String name = ctx.getPackageManager().getPackageInfo(ctx.getPackageName(), 0).versionName;
-            if (name != null) v = name;
-        } catch (Throwable ignored) {
-        }
-        return "reddit is fun (Android) " + v;
+        RedditApi.setUserAgent(ua);
     }
 
     // ------------------------------------------------------ response lookup
@@ -1265,7 +1203,7 @@ public final class ImageHosting {
             String url = API + "/user/" + URLEncoder.encode(name, "UTF-8") + "/submitted.json?sort=new&limit=5&raw_json=1";
             while (System.currentTimeMillis() < end) {
                 Thread.sleep(POLL_INTERVAL_MS);
-                Resp r = authed(asset.context, url, null);
+                RedditApi.Resp r = authed(asset.context, url, null);
                 if (r.code == 200) {
                     // The title match is only for videos, whose post may not carry the asset id.
                     String[] post = asset.isVideo()

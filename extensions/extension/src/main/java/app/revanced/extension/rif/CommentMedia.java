@@ -1035,7 +1035,7 @@ public final class CommentMedia {
         String id = edit.substring(3);
         if (!id.matches("[a-z0-9]{1,20}")) throw new IOException("odd comment name " + edit);
         String url = API + "/comments/" + link + ".json?comment=" + id + "&raw_json=1&rtj=yes&limit=1&context=0";
-        ImageHosting.Resp r;
+        RedditApi.Resp r;
         try {
             r = ImageHosting.authed(ctx, url, null);
         } catch (ImageHosting.UploadException e) {
@@ -1271,7 +1271,7 @@ public final class CommentMedia {
             @Override
             public void run() {
                 try {
-                    ImageHosting.Resp r = ImageHosting.authed(ctx, API + "/r/" + sub + "/about.json?raw_json=1", null);
+                    RedditApi.Resp r =ImageHosting.authed(ctx, API + "/r/" + sub + "/about.json?raw_json=1", null);
                     if (r.code == 200) {
                         synchronized (RULES) {
                             RULES.put(key, new Rules(allowedMediaTypes(r.body)));
@@ -1530,7 +1530,7 @@ public final class CommentMedia {
     static JSONObject convert(Context ctx, String markdown) {
         try {
             String form = "output_mode=rtjson&raw_json=1&markdown_text=" + URLEncoder.encode(markdown, "UTF-8");
-            ImageHosting.Resp r = ImageHosting.authed(ctx, API + "/api/convert_rte_body_format", form.getBytes(UTF8));
+            RedditApi.Resp r =ImageHosting.authed(ctx, API + "/api/convert_rte_body_format", form.getBytes(UTF8));
             if (r.code != 200) {
                 Log.w(TAG, "convert " + r.code + ": " + r.body);
                 throw fail("Reddit couldn't convert the comment (HTTP " + r.code + ").");
@@ -1668,7 +1668,7 @@ public final class CommentMedia {
                 }
                 polls++;
                 try {
-                    ImageHosting.Resp r = ImageHosting.authed(ctx, url, null);
+                    RedditApi.Resp r =ImageHosting.authed(ctx, url, null);
                     if (r.code != 200) {
                         Log.w(TAG, "processing poll " + polls + ": HTTP " + r.code);
                         continue;

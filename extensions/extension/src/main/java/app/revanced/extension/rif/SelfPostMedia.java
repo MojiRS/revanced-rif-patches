@@ -841,7 +841,7 @@ public final class SelfPostMedia {
     private static JSONObject lookupPost(Context ctx, String name) throws IOException {
         String id = name.substring(3);
         if (!id.matches("[a-z0-9]{1,20}")) throw new IOException("odd post name " + name);
-        ImageHosting.Resp r;
+        RedditApi.Resp r;
         try {
             r = ImageHosting.authed(ctx, API + "/comments/" + id + ".json?raw_json=1&rtj=yes&limit=1", null);
         } catch (ImageHosting.UploadException e) {
@@ -927,7 +927,7 @@ public final class SelfPostMedia {
     /** One edit of post {@code name} to {@code text}: Reddit's reply (errors included), or null when the request failed. */
     private static String editReply(Context ctx, String name, String text) {
         try {
-            ImageHosting.Resp r = ImageHosting.authed(ctx, API + "/api/editusertext", flattenForm(name, text).getBytes(UTF8));
+            RedditApi.Resp r =ImageHosting.authed(ctx, API + "/api/editusertext", flattenForm(name, text).getBytes(UTF8));
             return r.body;
         } catch (Throwable t) {
             Log.w(TAG, "second try failed: " + t);
@@ -995,7 +995,7 @@ public final class SelfPostMedia {
             @Override
             public String run() {
                 try {
-                    ImageHosting.Resp r = ImageHosting.authed(ctx, API + "/api/editusertext", form);
+                    RedditApi.Resp r =ImageHosting.authed(ctx, API + "/api/editusertext", form);
                     String failure = editResult(r.code, r.body);
                     if (failure == null) reply[0] = r.body != null ? r.body : "";
                     return failure;

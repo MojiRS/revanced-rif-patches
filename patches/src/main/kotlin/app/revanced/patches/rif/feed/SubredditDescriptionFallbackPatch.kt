@@ -4,7 +4,10 @@ import app.revanced.patcher.extensions.InstructionExtensions.addInstructions
 import app.revanced.patcher.fingerprint
 import app.revanced.patcher.patch.bytecodePatch
 import app.revanced.patches.rif.ads.platinumAdSlotFixPatch
+import app.revanced.patches.rif.shared.REDDIT_API_EXTENSION
 import app.revanced.patches.rif.shared.RIF_COMPATIBILITY
+import app.revanced.patches.rif.shared.requireScratchRegister
+import app.revanced.patches.rif.shared.rifUserAgentMethod
 import com.android.tools.smali.dexlib2.Opcode
 import com.android.tools.smali.dexlib2.iface.instruction.ReferenceInstruction
 import com.android.tools.smali.dexlib2.iface.reference.MethodReference
@@ -39,18 +42,26 @@ internal val sidebarParserFingerprint = fingerprint {
 @Suppress("unused")
 val subredditDescriptionFallbackPatch = bytecodePatch(
     name = "Subreddit description fallback",
-    description = "Shows the new Reddit description in a subreddit's info when it has no Old Reddit sidebar.",
+    description = "Shows the new Reddit description and rules in a subreddit's info when it has no Old Reddit sidebar.",
 ) {
     compatibleWith(*RIF_COMPATIBILITY)
     extendWith("extensions/extension.rve")
     dependsOn(platinumAdSlotFixPatch)
 
     execute {
-        // p1 = the response stream (the method has 5 registers, so p1 is v4 and fits invoke-static).
-        // The extension hands back a stream with the description filled in when it is null.
-        sidebarParserFingerprint.method.addInstructions(
+        val parser = sidebarParserFingerprint.method
+        // v0 is a local the original code writes first (const-class), so it's free at entry.
+        requireScratchRegister(parser)
+        val uaMethod = rifUserAgentMethod()
+        // rif's user agent for the rules request, then p1 = the response stream (the method has 5
+        // registers, so p1 is v4 and fits invoke-static). The extension hands back a stream with the
+        // description (and rules) filled in when the description is null.
+        parser.addInstructions(
             0,
             """
+                invoke-static { }, $uaMethod
+                move-result-object v0
+                invoke-static { v0 }, $REDDIT_API_EXTENSION->setUserAgent(Ljava/lang/String;)V
                 invoke-static { p1 }, $EXTENSION->withFallback(Ljava/io/InputStream;)Ljava/io/InputStream;
                 move-result-object p1
             """,
