@@ -63,7 +63,21 @@ public class SubredditDescriptionTest {
     }
 
     @Test
-    public void handlesCompactJson() throws Exception {
+    public void escapedCopyInEarlierStringIsNotMatched() throws Exception {
+        String title = quoted("see \"description_html\": null here");
+        byte[] in = ("{\"data\": {\"title\": " + title + ", \"description_html\": null, "
+                + "\"public_description_html\": " + quoted(HTML) + "}}").getBytes(UTF_8);
+        JSONObject data = new JSONObject(new String(SubredditDescription.apply(in), UTF_8)).getJSONObject("data");
+        assertEquals(HTML, data.getString("description_html"));
+        assertEquals("see \"description_html\": null here", data.getString("title"));
+        // Only the title's copy and no real key: untouched.
+        byte[] only = ("{\"data\": {\"title\": " + title + ", \"description_html\": \"x\", "
+                + "\"public_description_html\": " + quoted(HTML) + "}}").getBytes(UTF_8);
+        assertSame(only, SubredditDescription.apply(only));
+    }
+
+    @Test
+    public void handlesCompactJson()throws Exception {
         byte[] in = ("{\"data\":{\"description_html\":null,\"public_description_html\":" + quoted(HTML) + "}}")
                 .getBytes(UTF_8);
         JSONObject data = new JSONObject(new String(SubredditDescription.apply(in), UTF_8)).getJSONObject("data");

@@ -29,7 +29,8 @@ public final class SubredditDescription {
     // Bodies larger than this are passed through (about.json is a few KB).
     private static final int MAX_BYTES = 2 * 1024 * 1024;
     private static final Pattern NULL_DESCRIPTION =
-            Pattern.compile("\"description_html\"(\\s*):(\\s*)(?:null|\"\")");
+            // Anchored to a key position so an escaped copy inside a string value doesn't match.
+            Pattern.compile("([{,]\\s*)\"description_html\"(\\s*):(\\s*)(?:null|\"\")");
 
     private SubredditDescription() {}
 
@@ -49,9 +50,9 @@ public final class SubredditDescription {
             }
             return new ByteArrayInputStream(apply(read.toByteArray()));
         } catch (Throwable t) {
-            // What was read so far: rif sees the same truncated input it would have.
+            // What was read so far, then the rest (or the original error) from the source.
             Log.w(TAG, "description fallback failed", t);
-            return new ByteArrayInputStream(read.toByteArray());
+            return new java.io.SequenceInputStream(new ByteArrayInputStream(read.toByteArray()), in);
         }
     }
 
@@ -74,7 +75,7 @@ public final class SubredditDescription {
             if (fallback.trim().isEmpty()) return original;
             Log.d(TAG, "using public_description_html (" + fallback.length() + " chars)");
             String replaced = text.substring(0, m.start())
-                    + "\"description_html\"" + m.group(1) + ":" + m.group(2)
+                    + m.group(1) + "\"description_html\"" + m.group(2) + ":" + m.group(3)
                     + JSONObject.quote(fallback) + text.substring(m.end());
             return replaced.getBytes(UTF_8);
         } catch (Throwable t) {
